@@ -26,6 +26,12 @@ _c.js
 *.mp3
 !samples/*.mp3
 
-# 浏览器调试目录
+# 浏览器调试目录与临时截图
 _edge*/
 _cdp*/
+_t*/
+_a*/
+_s*/
+_v*/
+_*.png
+_full.png

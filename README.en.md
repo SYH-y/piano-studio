@@ -71,7 +71,8 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 ### Notation
 - Standard notation via VexFlow: clefs, auto key signature, time signature, stem
   directions, beamed eighths, filled-in rests
-- Numbered notation (jianpu): scale degrees, octave dots, beam underlines, barlines
+- Numbered notation (jianpu): scale degrees, octave dots, beam underlines, barlines,
+  with both hands shown on separate rows
 - Automatic grand staff split at C4
 - Key detection using the Krumhansl–Kessler major profile
 - Time signatures 4/4, 3/4, 2/4, 6/8
@@ -203,8 +204,9 @@ The page ships with its own assertions — no test framework needed:
 http://localhost:8765/index.html?selftest=1
 ```
 
-prints **33 assertions** covering clip splitting, ripple delete, drag clamping,
-undo/redo, paste isolation, project serialisation and dropped-file detection.
+prints **40 assertions** covering clip splitting, ripple delete, drag clamping,
+undo/redo, paste isolation, project serialisation, dropped-file detection,
+silence trimming across clips, dotted-note ticks, key spelling and split MIDI packets.
 
 Debug flags: `?demo=1`, `?selftest=1`, `?help=1`, `?nohelp=1`, `?idbtest=1`.
 

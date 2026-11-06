@@ -214,9 +214,13 @@
 
   .jp-wrap{display:flex; flex-wrap:wrap; gap:2px 0; font-size:15px;}
   .jp-measure{
-    display:flex; align-items:center; padding:10px 0; gap:14px;
+    display:flex; flex-direction:column; align-items:stretch;
+    padding:10px 0; gap:4px;
     border-left:1px solid #d2d1c9; padding-left:14px; margin-right:4px;
   }
+  .jp-row{display:flex; align-items:center; gap:14px;}
+  .jp-row.bass{opacity:.62;}
+  .jp-row.bass .jp-num{font-size:14px;}
   .jp-measure:first-child{border-left:3px solid #d2d1c9;}
   .jp-item{display:flex; flex-direction:column; align-items:center; min-width:16px; position:relative;}
   .jp-num{font-size:16px; line-height:1.1; font-variant-numeric:tabular-nums;}
@@ -523,7 +527,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.0</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.1</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
@@ -589,6 +593,16 @@ function stopAllSound() {
     try { activeNodes[i].stop(0); } catch (e) {}
   }
   activeNodes = [];
+}
+
+// 播放过的节点必须自己退场，否则长录音会把上万个已结束的节点留在数组里
+function trackNode(node) {
+  activeNodes.push(node);
+  node.onended = function () {
+    var i = activeNodes.indexOf(node);
+    if (i >= 0) activeNodes.splice(i, 1);
+  };
+  return node;
 }
 
 function makeIR(ac, seconds, decay) {
@@ -670,8 +684,9 @@ function synthVoice(ac, outs, t, freq, vel, dur, rel) {
     g.connect(bus);
     osc.start(t);
     osc.stop(stopAt);
-    activeNodes.push(osc);
+    trackNode(osc);
   }
+  return bus;
 }
 
 function nearestSample(pitch) {
@@ -705,15 +720,18 @@ function sampleVoice(ac, outs, t, pitch, vel, dur, rel) {
   g.connect(outs.wet);
   src.start(t);
   src.stop(end + rel + 0.1);
-  activeNodes.push(src);
-  return true;
+  trackNode(src);
+  return g;
 }
 
 function playTone(ac, outs, t, pitch, vel, dur, rel) {
   if (samplesReady) {
-    try { if (sampleVoice(ac, outs, t, pitch, vel, dur, rel)) return; } catch (e) {}
+    try {
+      var v = sampleVoice(ac, outs, t, pitch, vel, dur, rel);
+      if (v) return v;
+    } catch (e) {}
   }
-  synthVoice(ac, outs, t, freqOf(pitch), vel, dur, rel);
+  return synthVoice(ac, outs, t, freqOf(pitch), vel, dur, rel);
 }
 
 async function loadSamples() {
@@ -801,24 +819,36 @@ function lightKey(n, on) {
 /* ============================================================
    BLE MIDI
    ============================================================ */
+var midiCarry = null;
+
 function decodePacket(bytes) {
   var out = [];
+  if (!bytes.length) return out;
+
+  // 每个通知包都以 header 开头，随后可能跟一个时间戳；两者最高位都是 1
   var i = 0, n = bytes.length;
-  if (!n) return out;
   if (bytes[0] & 0x80) {
     i = 1;
     if (i < n && (bytes[i] & 0x80)) i++;
   }
-  while (i < n) {
-    var st = bytes[i];
-    if (st < 0x80) { i++; continue; }
-    if (st >= 0xF8) { out.push([st]); i++; continue; }
+
+  // 上一包没发完的消息接在这里继续解析
+  var buf = [];
+  if (midiCarry) { buf = midiCarry; midiCarry = null; }
+  for (; i < n; i++) buf.push(bytes[i]);
+
+  var k = 0, m = buf.length;
+  while (k < m) {
+    var st = buf[k];
+    if (st < 0x80) { k++; continue; }
+    if (st >= 0xF8) { out.push([st]); k++; continue; }
+
     var kind = st & 0xF0;
     var need = (kind === 0xC0 || kind === 0xD0) ? 1 : 2;
-    var args = [];
-    i++;
-    while (args.length < need && i < n && bytes[i] < 0x80) { args.push(bytes[i]); i++; }
-    out.push([st].concat(args));
+    if (k + need >= m) { midiCarry = buf.slice(k); break; }  // 消息被拆开，等下一包
+
+    out.push(need === 1 ? [st, buf[k + 1]] : [st, buf[k + 1], buf[k + 2]]);
+    k += need + 1;
   }
   return out;
 }
@@ -826,6 +856,8 @@ function decodePacket(bytes) {
 function nowMs() {
   return state.recording ? performance.now() - state.t0 : 0;
 }
+
+var monitorNodes = {};
 
 function onNoteOn(pitch, vel, t) {
   lightKey(pitch, true);
@@ -835,13 +867,36 @@ function onNoteOn(pitch, vel, t) {
   if ($('monitor').checked) {
     initLive();
     if (actx.state === 'suspended') actx.resume();
-    playTone(actx, live, actx.currentTime + 0.01, pitch, vel, 1.6, $('sustain').checked ? 1.4 : 0.12);
+    // 同一音高连按时，先把上一个还响着的收掉，避免叠成一片
+    var prev = monitorNodes[pitch];
+    if (prev) {
+      try {
+        var tn = actx.currentTime;
+        prev.gain.cancelScheduledValues(tn);
+        prev.gain.setValueAtTime(Math.max(prev.gain.value, 0.0001), tn);
+        prev.gain.exponentialRampToValueAtTime(0.0001, tn + 0.06);
+      } catch (e) {}
+    }
+    // 时值给足，真正的收声交给抬键
+    monitorNodes[pitch] = playTone(actx, live, actx.currentTime + 0.01, pitch, vel, 4, 0.5);
   }
   drawRoll();
 }
 
 function onNoteOff(pitch, t) {
   lightKey(pitch, false);
+
+  var mn = monitorNodes[pitch];
+  if (mn && actx) {
+    delete monitorNodes[pitch];
+    try {
+      var now = actx.currentTime;
+      mn.gain.cancelScheduledValues(now);
+      mn.gain.setValueAtTime(Math.max(mn.gain.value, 0.0001), now);
+      mn.gain.exponentialRampToValueAtTime(0.0001, now + ($('sustain').checked ? 0.6 : 0.18));
+    } catch (e) {}
+  }
+
   if (state.recording) {
     var p = state.pending[pitch];
     if (p) {
@@ -869,6 +924,7 @@ function handleMessage(msg, t) {
 }
 
 var bleChar = null;
+var bleDevice = null;
 
 function setPill(text, cls) {
   $('pillText').textContent = text;
@@ -882,6 +938,12 @@ async function connect() {
     return;
   }
   try {
+    // 换琴时先把旧连接断掉，否则旧的 characteristic 监听会一直挂着
+    if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+      try { bleDevice.gatt.disconnect(); } catch (e) {}
+    }
+    monitorNodes = {};
+
     $('btnConnect').disabled = true;
     setPill('搜索中…');
 
@@ -895,6 +957,7 @@ async function connect() {
     });
 
     setPill('连接中…');
+    bleDevice = device;
     var server = await device.gatt.connect();
     var service = await server.getPrimaryService(SERVICE);
     bleChar = await service.getCharacteristic(CHAR_UUID);
@@ -947,7 +1010,7 @@ function metroClick(at, accent) {
   g.connect(ac.destination);
   o.start(at);
   o.stop(at + 0.09);
-  activeNodes.push(o);
+  trackNode(o);
 }
 
 function startMetro() {
@@ -1068,6 +1131,7 @@ function stopRec() {
 
 var lastLiveRender = 0;
 var lastTempoGuess = 0;
+var lastLiveSig = '';
 
 function tick() {
   if (!state.recording) return;
@@ -1082,9 +1146,13 @@ function tick() {
 
   if (now - lastLiveRender > 700) {
     lastLiveRender = now;
-    buildScore();
-    renderStaff();
-    renderJianpu();
+    var sig = state.notes.length + ':' + Object.keys(state.pending).length;
+    if (sig !== lastLiveSig) {
+      lastLiveSig = sig;
+      buildScore();
+      renderStaff();
+      renderJianpu();
+    }
   }
 
   drawRoll();
@@ -1322,19 +1390,29 @@ function keyInfoFor(tonicPc) {
     spelling[pc] = { letter: letter, acc: accSym };
   }
 
-  for (var pc2 = 0; pc2 < 12; pc2++) {
-    if (spelling[pc2]) continue;
-    var lower = spelling[(pc2 + 11) % 12];
-    if (lower) {
-      spelling[pc2] = { letter: lower.letter, acc: ((lower.acc || 0) + 1) };
-    } else {
-      spelling[pc2] = { letter: 'c', acc: 1 };
-    }
-  }
-
   var SIG_BY_TONIC = { 0:0, 7:1, 2:2, 9:3, 4:4, 11:5, 6:6, 5:-1, 10:-2, 3:-3, 8:-4, 1:-5 };
   var sig = SIG_BY_TONIC[tonicPc];
   if (sig === undefined) sig = 0;
+
+  // 调外音按调号方向取等音拼写。
+  // 原来用「下方音级 + 一个升号」推导，F# / C# 调会得到重升号，
+  // 而渲染层只支持 ±1 个升降号，重升会被当成还原音，音高整体错位。
+  var SHARP_SPELL = [
+    { letter:'c', acc:0 }, { letter:'c', acc:1 }, { letter:'d', acc:0 }, { letter:'d', acc:1 },
+    { letter:'e', acc:0 }, { letter:'f', acc:0 }, { letter:'f', acc:1 }, { letter:'g', acc:0 },
+    { letter:'g', acc:1 }, { letter:'a', acc:0 }, { letter:'a', acc:1 }, { letter:'b', acc:0 }
+  ];
+  var FLAT_SPELL = [
+    { letter:'c', acc:0 }, { letter:'d', acc:-1 }, { letter:'d', acc:0 }, { letter:'e', acc:-1 },
+    { letter:'e', acc:0 }, { letter:'f', acc:0 }, { letter:'g', acc:-1 }, { letter:'g', acc:0 },
+    { letter:'a', acc:-1 }, { letter:'a', acc:0 }, { letter:'b', acc:-1 }, { letter:'b', acc:0 }
+  ];
+  var chrom = sig >= 0 ? SHARP_SPELL : FLAT_SPELL;
+
+  for (var pc2 = 0; pc2 < 12; pc2++) {
+    if (spelling[pc2]) continue;
+    spelling[pc2] = { letter: chrom[pc2].letter, acc: chrom[pc2].acc };
+  }
 
   return {
     tonicPc: tonicPc,
@@ -1435,8 +1513,13 @@ function buildScore() {
   var bass = measures(chordsFor(function (p) { return p < 60; }));
 
   var n = Math.max(treble.length, bass.length);
-  while (treble.length < n) treble.push([{ rest: true, b: 4, d: 'w' }]);
-  while (bass.length < n) bass.push([{ rest: true, b: 4, d: 'w' }]);
+  function padMeasure() {
+    return decompose(barLen, REST_DURS).map(function (r) {
+      return { rest: true, b: r.b, d: r.d };
+    });
+  }
+  while (treble.length < n) treble.push(padMeasure());
+  while (bass.length < n) bass.push(padMeasure());
 
   score = { treble: treble, bass: bass, n: n, key: ki, bpm: bpm, sig: sigNum + '/' + sigDen };
   return score;
@@ -1473,8 +1556,6 @@ function renderStaff() {
     host.innerHTML = '<p class="empty">乐谱渲染器初始化失败：' + e.message + '</p>';
     return;
   }
-
-  var measureW = (width - 24) / per;
 
   for (var s = 0; s < systems; s++) {
     var yTop = s * sysH + 18;
@@ -1533,15 +1614,15 @@ function drawVoice(ctx, stave, items, clef, ki) {
       }));
     } else {
       var keys = it.pitches.map(function (p) { return vexKey(p, ki); });
+      // dots 必须在构造时传入：事后 buildAndAttach 只画符头，不会计入 tick，
+      // 结果是每出现一个附点音符，小节就少算半拍。
       var sn = new Vex.Flow.StaveNote({
         clef: clef,
         keys: keys,
         duration: it.d,
+        dots: it.dot || 0,
         auto_stem: true
       });
-      if (it.dot) {
-        try { Vex.Flow.Dot.buildAndAttach([sn], { all: true }); } catch (e) {}
-      }
       notes.push(sn);
     }
   }
@@ -1618,12 +1699,9 @@ function renderJianpu() {
     return { digit: 1, acc: '', oct: oct };
   }
 
-  for (var m = 0; m < score.n; m++) {
-    var meas = document.createElement('div');
-    meas.className = 'jp-measure';
-
-    var items = score.treble[m] || [];
-
+  // 把一条声部渲染进一行，返回这一行是否有实际音符
+  function emit(items, row) {
+    var hasNote = false;
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       var el = document.createElement('div');
@@ -1633,13 +1711,12 @@ function renderJianpu() {
         el.innerHTML = '<span class="jp-dots-top">&nbsp;</span><span class="jp-rest">0</span><span class="jp-dots-bot">&nbsp;</span>';
         if (it.b >= 2) el.innerHTML += '<span class="jp-hold">' + new Array(Math.round(it.b)).join('– ') + '</span>';
       } else {
+        hasNote = true;
         var inner = document.createElement('div');
         inner.className = 'jp-chord jp-inner';
-        var maxOct = 0;
 
         it.pitches.forEach(function (p) {
           var info = degreeOf(p);
-          maxOct = Math.max(maxOct, Math.abs(info.oct));
           var line = document.createElement('span');
           line.className = 'jp-num';
           line.textContent = (info.acc || '') + info.digit;
@@ -1671,7 +1748,7 @@ function renderJianpu() {
         if (it.b >= 2) {
           var hold = document.createElement('span');
           hold.className = 'jp-hold';
-          hold.textContent = it.b >= 4 ? '– – –' : '–';
+          hold.textContent = it.b >= 4 ? '– – –' : (it.b >= 3 ? '– –' : '–');
           el.appendChild(hold);
         }
         if (it.dot) {
@@ -1681,8 +1758,25 @@ function renderJianpu() {
           el.appendChild(dotEl);
         }
       }
-      meas.appendChild(el);
+      row.appendChild(el);
     }
+    return hasNote;
+  }
+
+  for (var m = 0; m < score.n; m++) {
+    var meas = document.createElement('div');
+    meas.className = 'jp-measure';
+
+    var tRow = document.createElement('div');
+    tRow.className = 'jp-row';
+    emit(score.treble[m] || [], tRow);
+
+    var bRow = document.createElement('div');
+    bRow.className = 'jp-row bass';
+    var bHas = emit(score.bass[m] || [], bRow);
+
+    meas.appendChild(tRow);
+    if (bHas) meas.appendChild(bRow);
     wrap.appendChild(meas);
   }
 
@@ -2075,13 +2169,6 @@ function scheduleClipAt(ac, dest, clip, when, offset, dur) {
   g.connect(dest);
   src.start(when, clip.a / sr() + offset, dur);
   return src;
-}
-
-function cloneBuffer(buf) {
-  if (!buf) return null;
-  var out = actx.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
-  for (var c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c), c);
-  return out;
 }
 
 /* ---------- 视图坐标 ---------- */
@@ -2708,6 +2795,8 @@ function effectOnSelection(fn) {
   commitOp();
   edit.peakCache = { buf: null, val: 0 };
   edit.pyramid = null;
+  ovPeaks = null;
+  ovKey = '';
   setCacheDirty();
   ovPeaks = null;
   updateStatus();
@@ -2776,26 +2865,33 @@ function trimSilence() {
   if (!edit.srcBuf) return;
   var th = 0.002;
   var rate = sr();
-  var firstT = null, lastT = null;
+  var d = edit.srcBuf.getChannelData(0);
+  var startSec = null, endSec = null;
 
-  forEachSrcRange(0, timelineDur(), function (sa, sb) {
-    var d = edit.srcBuf.getChannelData(0);
-    if (firstT === null) {
-      for (var i = sa; i < sb; i++) if (Math.abs(d[i]) > th) { firstT = i; break; }
+  // 逐个片段找首/末个有声采样。必须每段都比对一遍：
+  // 只取第一段会把 endSec 落在第一段末尾，后面的片段会被整段删掉。
+  for (var ci = 0; ci < edit.clips.length; ci++) {
+    var c = edit.clips[ci];
+    var from = Math.max(0, c.a);
+    var to = Math.min(c.b, d.length);
+    if (to <= from) continue;
+
+    var first = -1, last = -1;
+    for (var p = from; p < to; p++) {
+      if (Math.abs(d[p]) > th) { first = p; break; }
     }
-    if (lastT === null) {
-      for (var j = sb - 1; j >= sa; j--) if (Math.abs(d[j]) > th) { lastT = j; break; }
+    if (first < 0) continue;
+    for (var q = to - 1; q >= from; q--) {
+      if (Math.abs(d[q]) > th) { last = q; break; }
     }
-  });
 
-  if (firstT === null || lastT === null) { alert('整段几乎都是静音。'); return; }
-
-  var startSec = 0, endSec = timelineDur();
-  for (var i = 0; i < edit.clips.length; i++) {
-    var c = edit.clips[i];
-    if (firstT >= c.a && firstT < c.b) startSec = c.start + (firstT - c.a) / rate;
-    if (lastT >= c.a && lastT < c.b) endSec = c.start + (lastT - c.a) / rate + 0.02;
+    var s0 = c.start + (first - c.a) / rate;
+    var s1 = c.start + (last - c.a) / rate + 0.02;
+    if (startSec === null || s0 < startSec) startSec = s0;
+    if (endSec === null || s1 > endSec) endSec = s1;
   }
+
+  if (startSec === null || endSec === null) { alert('整段几乎都是静音。'); return; }
 
   beginOp();
   deleteRange(endSec, timelineDur() + 1);
@@ -3280,6 +3376,79 @@ function runSelfTest() {
     ok('工程序列化含音符', Array.isArray(meta.notes), 'notes=' + meta.notes.length);
     ok('工程序列化含参数', meta.bpm > 0 && typeof meta.gridDiv === 'number', 'bpm=' + meta.bpm);
     ok('工程序列化不含音频数据', meta.audio === undefined && meta.audioBlob === undefined, '仅元数据');
+    /* ---- 本轮修复的回归用例 ---- */
+
+    var ac2 = new OfflineAudioContext(2, 44100 * 3, 44100);
+    var tb = ac2.createBuffer(2, 44100 * 2, 44100);
+    var td0 = tb.getChannelData(0), td1 = tb.getChannelData(1);
+    for (var ti = 0; ti < 44100; ti++) { td0[ti] = Math.sin(ti / 20) * 0.5; td1[ti] = td0[ti]; }
+    for (var tj = Math.floor(44100 * 1.2); tj < 44100 * 2; tj++) { td0[tj] = Math.sin(tj / 20) * 0.5; td1[tj] = td0[tj]; }
+
+    // 1) 裁掉静音不能把后面的片段一起删掉
+    loadBuffer(tb);
+    splitRaw(1.0);
+    if (edit.clips[1]) edit.clips[1].start = 1.2;
+    afterChange();
+    var clipsBefore = edit.clips.length, durBefore = timelineDur();
+    trimSilence();
+    ok('裁静音保留全部片段', edit.clips.length === clipsBefore, clipsBefore + ' -> ' + edit.clips.length);
+    ok('裁静音未截断时间轴', timelineDur() > durBefore - 0.4, durBefore.toFixed(2) + ' -> ' + timelineDur().toFixed(2));
+
+    // 2) 原地特效必须让概览条缓存失效
+    loadBuffer(tb);
+    drawOverview();
+    edit.sel = [0.1, 0.9];
+    silenceSelection();
+    drawOverview();
+    var cols = Math.floor((ovPeaks ? ovPeaks.length : 0) / 2);
+    var zc = 0, tc = 0;
+    for (var vi = Math.floor(cols * 0.10); vi < Math.floor(cols * 0.40); vi++) {
+      tc++;
+      if (Math.abs(ovPeaks[vi * 2]) < 0.001 && Math.abs(ovPeaks[vi * 2 + 1]) < 0.001) zc++;
+    }
+    ok('特效后概览波形已刷新', tc > 0 && zc >= tc * 0.9, zc + '/' + tc + ' 列为静音');
+
+    // 3) 附点音符要按附点计拍
+    try {
+      var dotNote = new Vex.Flow.StaveNote({ clef: 'treble', keys: ['c/4'], duration: 'h', dots: 1, auto_stem: true });
+      ok('附点二分计 3 拍', dotNote.getTicks().value() === 12288, 'ticks=' + dotNote.getTicks().value());
+    } catch (e3) {
+      ok('附点二分计 3 拍', false, e3.message);
+    }
+
+    // 4) 升号调不出现重升/重降
+    var badAcc = 0;
+    [6, 1, 11, 5].forEach(function (tt) {
+      var kk = keyInfoFor(tt);
+      for (var pp = 0; pp < 12; pp++) { if (Math.abs(kk.spelling[pp].acc) > 1) badAcc++; }
+    });
+    ok('升号调无重升号', badAcc === 0, '越界 ' + badAcc + ' 个');
+
+    // 5) 3/4 的补白小节必须是 3 拍
+    var keepNotes = state.notes, keepSig = state.timeSig, keepBpm = state.bpm;
+    state.notes = [
+      { pitch: 72, vel: 90, tOn: 0, tOff: 400 },
+      { pitch: 74, vel: 90, tOn: 2000, tOff: 2400 },
+      { pitch: 76, vel: 90, tOn: 4000, tOff: 4400 }
+    ];
+    state.timeSig = '3/4';
+    state.bpm = 90;
+    var sc2 = buildScore();
+    var badBar = 0;
+    sc2.bass.forEach(function (bar) {
+      var sum = bar.reduce(function (a, it) { return a + it.b; }, 0);
+      if (Math.abs(sum - 3) > 0.01) badBar++;
+    });
+    ok('3/4 补白小节为 3 拍', badBar === 0, '异常小节 ' + badBar + ' 个');
+    state.notes = keepNotes; state.timeSig = keepSig; state.bpm = keepBpm;
+
+    // 6) 被拆到两个通知包里的消息要能拼回来
+    midiCarry = null;
+    var pk1 = decodePacket(new Uint8Array([0x80, 0x80, 0x90, 0x3C]));
+    var pk2 = decodePacket(new Uint8Array([0x80, 0x80, 0x64]));
+    ok('跨包消息能拼接', pk1.length === 0 && pk2.length === 1 && pk2[0][0] === 0x90 && pk2[0][1] === 0x3C && pk2[0][2] === 0x64,
+       JSON.stringify(pk1) + ' + ' + JSON.stringify(pk2));
+
     var pass = out.filter(function (s) { return s.indexOf('PASS|') === 0; }).length;
     var box = document.createElement('pre');
     box.id = 'selftestOut';
