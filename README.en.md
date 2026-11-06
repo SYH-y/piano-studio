@@ -161,10 +161,12 @@ editor: record through a cable + audio interface, then drag the file in.
 service, then `gatt.connect()` and `startNotifications()` on characteristic
 `7772e5db-…-f2669d106bf3`.
 
-**Packet decoding** — a notification may pack several MIDI messages:
-`[header][timestamp][status][data1][data2]…`. The decoder skips the header and
-timestamp, then loops over status bytes, honouring the fact that `0xC0`/`0xD0`
-carry only one data byte.
+**Packet decoding** — a notification packs `[header | ts high 6 bits]`, then one
+`[ts low 7 bits][status][data…]` group per message. Timestamp octets (`0x80–0xFF`)
+overlap status octets (`0x80–0xEF`), so the decoder disambiguates with one rule:
+a timestamp is always followed by a status byte (≥0x80), a status byte is always
+followed by data (<0x80). The 13-bit millisecond counter wraps every 8192 ms and is
+unwrapped; packets split mid-message are carried over to the next notification.
 
 **Score pipeline** — estimate BPM from the median note interval → detect key by
 correlating a 12-bin pitch-class histogram against the Krumhansl–Kessler profile →
@@ -204,7 +206,7 @@ The page ships with its own assertions — no test framework needed:
 http://localhost:8765/index.html?selftest=1
 ```
 
-prints **40 assertions** covering clip splitting, ripple delete, drag clamping,
+prints **45 assertions** covering clip splitting, ripple delete, drag clamping,
 undo/redo, paste isolation, project serialisation, dropped-file detection,
 silence trimming across clips, dotted-note ticks, key spelling and split MIDI packets.
 

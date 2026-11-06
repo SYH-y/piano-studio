@@ -527,7 +527,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.1</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.2</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
@@ -819,39 +819,82 @@ function lightKey(n, on) {
 /* ============================================================
    BLE MIDI
    ============================================================ */
-var midiCarry = null;
+/* BLE-MIDI 事件包（BEP）结构：
+ *
+ *   [包头 0x80|ts高6位]  ( [ts低7位] [状态字节] [数据...] )*
+ *
+ * 包头携带 13 位时间戳的高 6 位，每条消息前各带一个低 7 位的时间戳字节。
+ * 时间戳字节可以省略，表示沿用上一个。
+ *
+ * 难点在于时间戳字节（0x80–0xFF）和状态字节（0x80–0xEF）、系统实时消息（0xF8–0xFF）
+ * 的取值范围完全重叠。裁决规则只有一条：
+ *
+ *   时间戳后面一定跟状态字节（>=0x80）；
+ *   状态字节后面一定是数据字节（<0x80）。
+ *
+ * 所以看一眼下一个字节就能定，不需要猜。
+ */
+function createMidiParser() {
+  var carry = [];      // 上一包没消费完的字节
+  var ts = 0;          // 当前生效的时间戳（已解回绕，单位 ms）
+  var lastRaw = -1;    // 上一个原始 13 位时间戳
+  var wrapBase = 0;    // 回绕累计
 
-function decodePacket(bytes) {
-  var out = [];
-  if (!bytes.length) return out;
-
-  // 每个通知包都以 header 开头，随后可能跟一个时间戳；两者最高位都是 1
-  var i = 0, n = bytes.length;
-  if (bytes[0] & 0x80) {
-    i = 1;
-    if (i < n && (bytes[i] & 0x80)) i++;
+  function dataLen(status) {
+    var k = status & 0xF0;
+    return (k === 0xC0 || k === 0xD0) ? 1 : 2;   // 音色切换 / 通道压力只有 1 个数据字节
   }
 
-  // 上一包没发完的消息接在这里继续解析
-  var buf = [];
-  if (midiCarry) { buf = midiCarry; midiCarry = null; }
-  for (; i < n; i++) buf.push(bytes[i]);
+  function feed(bytes) {
+    var out = [];
+    if (!bytes.length) return out;
 
-  var k = 0, m = buf.length;
-  while (k < m) {
-    var st = buf[k];
-    if (st < 0x80) { k++; continue; }
-    if (st >= 0xF8) { out.push([st]); k++; continue; }
+    var hi6 = 0, off = 0;
+    if (bytes[0] & 0x80) { hi6 = bytes[0] & 0x3F; off = 1; }
 
-    var kind = st & 0xF0;
-    var need = (kind === 0xC0 || kind === 0xD0) ? 1 : 2;
-    if (k + need >= m) { midiCarry = buf.slice(k); break; }  // 消息被拆开，等下一包
+    var buf = carry.concat(Array.prototype.slice.call(bytes, off));
+    carry = [];
 
-    out.push(need === 1 ? [st, buf[k + 1]] : [st, buf[k + 1], buf[k + 2]]);
-    k += need + 1;
+    var i = 0;
+    while (i < buf.length) {
+      var b = buf[i];
+      if (b < 0x80) { i++; continue; }            // 孤立的数据字节，丢弃
+
+      var next = buf[i + 1];
+      if (next === undefined) { carry = buf.slice(i); break; }   // 判别不了，等下一包
+
+      if (next >= 0x80) {                          // 后面还是高位字节 → 这是时间戳
+        var raw = (hi6 << 7) | (b & 0x7F);
+        if (lastRaw >= 0 && raw < lastRaw && lastRaw - raw > 4096) wrapBase += 8192;
+        lastRaw = raw;
+        ts = wrapBase + raw;
+        i++;
+        continue;
+      }
+
+      if (b >= 0xF8) { out.push({ ts: ts, msg: [b] }); i++; continue; }   // 实时消息
+      if (b === 0xF0) {                            // SysEx：跳到结束字节，不做解析
+        while (i < buf.length && buf[i] !== 0xF7) i++;
+        i++;
+        continue;
+      }
+      if (b >= 0xF1 && b <= 0xF7) { i++; continue; }  // 其余系统公共消息，跳过
+
+      var n = dataLen(b);
+      if (i + n >= buf.length) { carry = buf.slice(i); break; }
+      out.push({ ts: ts, msg: buf.slice(i, i + n + 1) });
+      i += n + 1;
+    }
+    return out;
   }
-  return out;
+
+  return {
+    feed: feed,
+    reset: function () { carry = []; ts = 0; lastRaw = -1; wrapBase = 0; }
+  };
 }
+
+var midiParser = createMidiParser();
 
 function nowMs() {
   return state.recording ? performance.now() - state.t0 : 0;
@@ -957,6 +1000,7 @@ async function connect() {
     });
 
     setPill('连接中…');
+    midiParser.reset();
     bleDevice = device;
     var server = await device.gatt.connect();
     var service = await server.getPrimaryService(SERVICE);
@@ -966,8 +1010,20 @@ async function connect() {
     bleChar.addEventListener('characteristicvaluechanged', function (ev) {
       var dv = ev.target.value;
       var bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
-      var t = nowMs();
-      decodePacket(bytes).forEach(function (m) { handleMessage(m, t); });
+
+      var arrival = nowMs();
+      var list = midiParser.feed(bytes);
+      if (!list.length) return;
+
+      // 包间用本机时钟，包内用设备时间戳做偏移。
+      // 这样既避免设备时钟漂移，又能还原同一包里多个音的真实先后
+      // （否则一个和弦会被压成同一毫秒）。设备时间戳恒定时偏移为 0，自动退回到达时刻。
+      var base = list[0].ts;
+      for (var mi = 0; mi < list.length; mi++) {
+        var off = list[mi].ts - base;
+        if (!(off >= 0 && off <= 500)) off = 0;
+        handleMessage(list[mi].msg, arrival + off);
+      }
     });
 
     device.addEventListener('gattserverdisconnected', function () {
@@ -3442,12 +3498,34 @@ function runSelfTest() {
     ok('3/4 补白小节为 3 拍', badBar === 0, '异常小节 ' + badBar + ' 个');
     state.notes = keepNotes; state.timeSig = keepSig; state.bpm = keepBpm;
 
-    // 6) 被拆到两个通知包里的消息要能拼回来
-    midiCarry = null;
-    var pk1 = decodePacket(new Uint8Array([0x80, 0x80, 0x90, 0x3C]));
-    var pk2 = decodePacket(new Uint8Array([0x80, 0x80, 0x64]));
-    ok('跨包消息能拼接', pk1.length === 0 && pk2.length === 1 && pk2[0][0] === 0x90 && pk2[0][1] === 0x3C && pk2[0][2] === 0x64,
-       JSON.stringify(pk1) + ' + ' + JSON.stringify(pk2));
+    // 6) BLE-MIDI 报文解析
+    var P1 = createMidiParser();
+    var r1 = P1.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64]));
+    ok('单消息包（梵西格式）', r1.length === 1 && r1[0].msg[0] === 0x90 && r1[0].msg[1] === 0x3C && r1[0].msg[2] === 0x64,
+       JSON.stringify(r1));
+
+    var P2 = createMidiParser();
+    var r2 = P2.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64, 0x81, 0x80, 0x3C, 0x00]));
+    ok('一包两条消息且各自带时间戳', r2.length === 2 && r2[0].ts === 0 && r2[1].ts === 1 && r2[1].msg[0] === 0x80,
+       'ts=' + r2.map(function (m) { return m.ts; }).join(','));
+
+    var P3 = createMidiParser();
+    var r3 = P3.feed(new Uint8Array([0x80 | 0x05, 0x80, 0x90, 0x3C, 0x64]));
+    ok('包头携带时间戳高位', r3.length === 1 && r3[0].ts === 640, 'ts=' + (r3[0] || {}).ts);
+
+    var P4 = createMidiParser();
+    var r4 = P4.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64, 0x80, 0x3C, 0x00]));
+    ok('省略后续时间戳时沿用上一个', r4.length === 2 && r4[1].msg[0] === 0x80 && r4[1].ts === r4[0].ts,
+       'ts=' + r4.map(function (m) { return m.ts; }).join(','));
+
+    var P5 = createMidiParser();
+    var r5a = P5.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C]));
+    var r5b = P5.feed(new Uint8Array([0x80, 0x64]));
+    ok('跨包消息能拼接', r5a.length === 0 && r5b.length === 1 && r5b[0].msg[2] === 0x64,
+       r5a.length + ' + ' + JSON.stringify(r5b));
+
+    ok('解析器不再引用旧函数', typeof decodePacket === 'undefined' && typeof midiCarry === 'undefined',
+       'decodePacket=' + typeof decodePacket + ' midiCarry=' + typeof midiCarry);
 
     var pass = out.filter(function (s) { return s.indexOf('PASS|') === 0; }).length;
     var box = document.createElement('pre');
