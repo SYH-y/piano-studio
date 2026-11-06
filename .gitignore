@@ -1,0 +1,31 @@
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 测试与截图临时产物
+_s*_test/
+*.log
+st.txt
+d[0-9].txt
+dom*.txt
+*_check.js
+_c.js
+
+# 本地工程导出
+*.mid
+*.wav
+*.mp3
+!samples/*.mp3
+
+# 浏览器调试目录
+_edge*/
+_cdp*/
