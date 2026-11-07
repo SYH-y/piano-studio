@@ -240,7 +240,7 @@
 
   .view{display:none;}
   .view.active{display:block;}
-  canvas#roll{width:100%; height:270px; display:block; border-radius:9px; background:#fcfcf9; border:1px solid var(--line2);}
+  canvas#roll{width:100%; height:270px; display:block; border-radius:9px; background:#fcfcf9; border:1px solid var(--line2); touch-action:none;}
 
   .note-tools{display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom:10px;}
   .note-tools .sep{width:1px; height:20px; background:var(--line); margin:0 3px;}
@@ -316,12 +316,12 @@
   canvas#wave{
     width:100%; height:260px; display:block; border-radius:9px 9px 0 0;
     background:#fcfcf9; border:1px solid var(--line2); border-bottom:0;
-    cursor:crosshair; outline:none;
+    cursor:crosshair; outline:none; touch-action:none;
   }
   canvas#wave:focus{border-color:var(--accent-line);}
   canvas#overview{
     width:100%; height:42px; display:block; border-radius:0 0 9px 9px;
-    background:#f5f4ef; border:1px solid var(--line2); cursor:pointer;
+    background:#f5f4ef; border:1px solid var(--line2); cursor:pointer; touch-action:none;
   }
   .edit-hint{margin-top:9px; font-size:12px; color:var(--faint);}
   .edit-hint i{font-style:normal; color:#d1463f;}

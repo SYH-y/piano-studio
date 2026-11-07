@@ -4,13 +4,15 @@
 
 Connect to your piano over Web Bluetooth (BLE-MIDI), watch standard notation and
 numbered notation appear as you play, render the performance to MIDI / WAV / MP3,
-and edit the result on a multi-clip timeline — all inside one HTML file.
+and edit the result on a multi-clip timeline — all inside a local static app.
 
 No audio interface · No recording cable · No install · Works offline · Data never leaves your machine
 
 ![license](https://img.shields.io/badge/license-MIT-0f6e56)
 ![browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%2089%2B-0f6e56)
 ![build](https://img.shields.io/badge/build-none%20required-0f6e56)
+
+Current version: **v1.6.1**. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 > 中文文档见 [README.md](README.md)
 
@@ -64,6 +66,7 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 ### Recording
 - BLE-MIDI over GATT — bypasses OS pairing, so a device hidden from the Windows
   "Add a device" dialog still connects
+- USB-MIDI through the Web MIDI API, with port discovery and hot-plug monitoring
 - Captures note on/off and velocity; 88-key on-screen keyboard highlights live
 - Metronome with accented downbeat, plus a 4-beat count-in
 - Sustain (CC) monitor — tells you whether your piano actually broadcasts pedal data
@@ -74,9 +77,12 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 - Numbered notation (jianpu): scale degrees, octave dots, beam underlines, barlines,
   with both hands shown on separate rows
 - Automatic grand staff split at C4
-- Key detection using the Krumhansl–Kessler major profile
+- Key detection using Krumhansl–Kessler major and minor profiles
+- Cross-bar ties for long notes, rendered in VexFlow and jianpu
 - Time signatures 4/4, 3/4, 2/4, 6/8
 - Live re-layout every 600 ms while recording; BPM re-estimated every 2.5 s
+- Piano-roll editing: select, move, resize, transpose, quantise, change velocity,
+  delete, undo and redo (50 note-edit levels)
 
 ### Rendering & export
 - 44 local FluidR3_GM piano samples (A0–C8, every semitone), fully offline
@@ -84,18 +90,20 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 - Export **MIDI**, **WAV** (44.1 kHz / 16 bit), **MP3** (128 kbps, encoded in-browser)
 
 ### Timeline editor
-- Multi-clip model: split, drag, trim both ends, delete, leave gaps
+- Multi-clip model: split, drag, trim both ends, delete, leave gaps and overlap
 - Selection: delete, keep, copy, paste, silence, reverse, normalise, fade in/out,
   trim leading/trailing silence
 - Wheel zoom anchored at the cursor, time ruler, overview strip, draggable playhead
 - 0.05 s snapping (hold Alt to disable), zero-crossing alignment
 - 8 / 30 / 80 ms de-click fades at clip boundaries
+- Automatic crossfades for overlapping clips
 - Drop an audio file anywhere on the page to import it
 
 ### Project management
 - Autosave to IndexedDB 1.2 s after every edit, plus a save on page hide
 - Restore prompt on the next visit
 - Export/import a `.json` project (audio + full edit state)
+- Save, restore and delete up to 20 local project snapshots
 
 ---
 
@@ -189,12 +197,13 @@ samples per bucket.
 | Limitation | Why | Impact |
 |---|---|---|
 | Pedal data may be missing | Many pianos only send sustain to the internal engine | Use the simulated sustain |
-| Major keys only | Detection uses the major profile | Minor pieces map to their relative major |
+| Tuplets | There is no reliable automatic triplet detector yet | Triplets need manual correction |
 | Single-layer samples | 44 samples, no velocity layers | Soft and loud share one sample |
 | Fixed time signature | No mid-piece changes | Changing-meter pieces misalign |
-| Clips cannot overlap | Overlap is required for true crossfades | Boundary fades only |
-| Desktop layout | UI designed for large screens | Android Chrome works but is cramped |
-| BLE-MIDI only | Web MIDI API not wired up | USB-MIDI pianos unsupported |
+| Simplified jianpu alignment | The two hands are laid out independently | It is readable, but not a fully aligned conductor score |
+| Main-thread waveform work | Peak pyramid already reduces scans to about 1/128 | Very long files can still use the main thread |
+| Mid-piece time signatures | The current meter is global | Changing-meter pieces misalign |
+| Snapshot retention | The browser keeps the most recent 20 snapshots | Older snapshots are pruned |
 
 ---
 
@@ -206,9 +215,10 @@ The page ships with its own assertions — no test framework needed:
 http://localhost:8765/index.html?selftest=1
 ```
 
-prints **45 assertions** covering clip splitting, ripple delete, drag clamping,
-undo/redo, paste isolation, project serialisation, dropped-file detection,
-silence trimming across clips, dotted-note ticks, key spelling and split MIDI packets.
+prints **75 assertions** covering clip splitting, overlaps and crossfades, ripple delete,
+drag clamping, undo/redo, paste isolation, project serialisation, snapshots,
+dropped-file detection, silence trimming across clips, dotted-note ticks, minor-key
+detection, cross-bar ties, USB MIDI and split MIDI packets.
 
 Debug flags: `?demo=1`, `?selftest=1`, `?help=1`, `?nohelp=1`, `?idbtest=1`.
 

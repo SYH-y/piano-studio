@@ -1,32 +1,52 @@
 @echo off
-chcp 65001 >nul
-title PIANO STUDIO - æœ¬åœ°æœåŠ¡ï¼ˆå…³é—­æœ¬çª—å£å³åœæ­¢ï¼‰
+setlocal
+title PIANO STUDIO - ±¾µØ·þÎñ£¨¹Ø±Õ±¾´°¿Ú¼´Í£Ö¹£©
 cd /d "%~dp0"
 
-set "PY="
-where python >nul 2>nul && set "PY=python"
-if not defined PY where py >nul 2>nul && set "PY=py"
+rem ================================================================
+rem  ÖØÒª£º±¾ÎÄ¼þ±ØÐë±£´æÎª GBK(cp936) ±àÂë + CRLF »»ÐÐ¡£
+rem  ²»Òª¸Ä³É UTF-8£¬Ò²²»Òª¼Ó chcp 65001£¬¸ü²»Òª¸Ä³É LF£º
+rem  cmd.exe ¶ÁÅú´¦ÀíÊ±»á°´ÂëÒ³»Ø¶ÁÎÄ¼þ£¬UTF-8/ÖÐÎÄ/LF ÈýÕß
+rem  Í¬Ê±³öÏÖ»áÈÃËü¶ÁÆ«×Ö½Ú£¬°Ñ "%PY% serve.py" ½Ø¶Ï³É "python"£¬
+rem  ÓÚÊÇË«»÷ºóÖ»µ¯³öÒ»¸ö¿ÕµÄ Python ½»»¥´°¿Ú£¨>>>£©£¬·þÎñÆð²»À´¡£
+rem ================================================================
 
-if not defined PY (
+if not exist "serve.py" (
   echo.
-  echo   [é”™è¯¯] æ²¡æœ‰æ‰¾åˆ° Python 3ã€‚
-  echo.
-  echo   è¯·åˆ° https://www.python.org/downloads/ ä¸‹è½½å®‰è£…ï¼Œ
-  echo   å®‰è£…ç¬¬ä¸€æ­¥è®°å¾—å‹¾é€‰ "Add python.exe to PATH"ã€‚
+  echo   [´íÎó] Õâ¸öÎÄ¼þ¼ÐÀïÃ»ÓÐ serve.py¡£
+  echo   Çë°Ñ start.bat ºÍ serve.py ·ÅÔÚÍ¬Ò»¸öÎÄ¼þ¼ÐÀï¡£
   echo.
   pause
   exit /b 1
 )
 
-echo.
-echo   PIANO STUDIO  -  ç”µé’¢ç´è“ç‰™å½•éŸ³å·¥ä½œå°
-echo   --------------------------------------------------
-echo   æµè§ˆå™¨ä¼šè‡ªåŠ¨æ‰“å¼€ã€‚æ²¡æ‰“å¼€å°±æ‰‹åŠ¨è®¿é—®ï¼š
-echo   http://localhost:8765/
-echo.
-echo   å¿…é¡»ç”¨ Chrome æˆ– Edgeï¼Œè“ç‰™åŠŸèƒ½æ‰èƒ½ç”¨ã€‚
-echo   å…³é—­è¿™ä¸ªçª—å£ = åœæ­¢æœåŠ¡ã€‚
-echo.
+rem ---- ÕÒÒ»¸öÕæÄÜÅÜµÄ Python 3£¨Î¢ÈíÉÌµêµÄ¼Ù python.exe »á±»µ²µô£©----
+set "PY="
+
+where python >nul 2>nul
+if not errorlevel 1 (
+  python -c "import sys" >nul 2>nul
+  if not errorlevel 1 set "PY=python"
+)
+
+if not defined PY (
+  where py >nul 2>nul
+  if not errorlevel 1 (
+    py -3 -c "import sys" >nul 2>nul
+    if not errorlevel 1 set "PY=py -3"
+  )
+)
+
+if not defined PY (
+  echo.
+  echo   [´íÎó] Ã»ÓÐÕÒµ½ Python 3¡£
+  echo.
+  echo   Çëµ½ https://www.python.org/downloads/ ÏÂÔØ°²×°£¬
+  echo   °²×°µÚÒ»²½¼ÇµÃ¹´Ñ¡ "Add python.exe to PATH"¡£
+  echo.
+  pause
+  exit /b 1
+)
 
 %PY% serve.py
 pause

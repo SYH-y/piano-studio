@@ -1,8 +1,13 @@
 # 统一换行符：仓库内一律 LF，避免 Windows 上把 shebang 脚本改成 CRLF
 * text=auto eol=lf
 
-# Windows 批处理必须是 CRLF，否则某些环境下 goto/label 会异常
-*.bat text eol=crlf
+# Windows 批处理：按原始字节存储，禁止任何换行/编码转换。
+# start.bat 是 GBK + CRLF 写的（cmd.exe 的批处理解析器要求如此）；
+# 一旦被转成 LF，cmd 会读偏字节，把 "%PY% serve.py" 截断成 "python"，
+# 双击后只会弹出一个空的 Python 交互窗口。所以这里必须是 -text 而不是
+# text eol=crlf（后者仍会把工作区内容规范化，反而不稳定）。
+*.bat -text
+*.cmd -text
 
 # 二进制资源不要做任何转换
 *.png binary

@@ -7,10 +7,13 @@
 <meta name="description" content="一个纯前端的电钢琴工作台：用 Web Bluetooth 直接接收 BLE-MIDI，实时出五线谱与简谱，并把演奏渲染成 MIDI / WAV / MP3，内置多片段时间轴音频剪辑器。无需声卡、无需内录线、离线可用。">
 <meta name="author" content="PIANO STUDIO contributors">
 <meta name="theme-color" content="#f2f2ee">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta property="og:type" content="website">
 <meta property="og:title" content="PIANO STUDIO · 电钢琴蓝牙录音工作台">
 <meta property="og:description" content="BLE-MIDI 直连电钢琴，实时制谱，多片段时间轴剪辑，导出 MIDI / WAV / MP3。纯前端、零依赖、可离线。">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f6e56'/%3E%3Crect x='6' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='13' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='20' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='10' y='8' width='4' height='8.5' rx='1' fill='%2323231f'/%3E%3Crect x='17' y='8' width='4' height='8.5' rx='1' fill='%2323231f'/%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.webmanifest">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -232,7 +235,7 @@
         <button class="btn full" id="btnSnapshot">保存当前版本</button>
       </div>
       <div class="snap-list" id="snapList"><p class="hint">还没有快照。点「保存当前版本」记录一个可恢复的历史点。</p></div>
-      <p class="hint">每次录完音会自动存一个版本；也可手动保存。版本存在本机浏览器，可随时恢复或删除。</p>
+      <p class="hint">每次录完音会自动存一个版本；也可手动保存。版本存在本机浏览器，最多保留最近 20 个，可随时恢复或删除。</p>
     </div>
 
     <div class="card">
@@ -279,7 +282,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.6.0</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.6.1</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>

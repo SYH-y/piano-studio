@@ -1,0 +1,14 @@
+{
+  "name": "PIANO STUDIO",
+  "short_name": "Piano Studio",
+  "description": "本地电钢琴录音、制谱、导出与音频剪辑工作台",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f2f3f0",
+  "theme_color": "#0f6e56",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

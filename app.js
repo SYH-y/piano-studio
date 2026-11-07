@@ -1135,9 +1135,27 @@ function rollMousePos(e) {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+function finishNoteDrag(e) {
+  if (!noteEdit.drag) return;
+  var o = noteEdit.drag.orig;
+  var n = state.notes[noteEdit.drag.idx];
+  var snap = noteEdit.drag.snap;
+  noteEdit.drag = null;
+  if (n.pitch !== o.pitch || Math.abs(n.tOn - o.tOn) > 1 || Math.abs(n.tOff - o.tOff) > 1) {
+    notePushUndo(snap);
+    afterNoteEdit();
+  } else {
+    drawRoll();
+  }
+  if (e && e.pointerId !== undefined) {
+    try { roll.releasePointerCapture(e.pointerId); } catch (err) {}
+  }
+}
+
 function setupNoteEditor() {
-  roll.addEventListener('mousedown', function (e) {
+  roll.addEventListener('pointerdown', function (e) {
     if (state.recording) return;
+    e.preventDefault();
     var pos = rollMousePos(e);
     var hit = hitTestNote(pos.x, pos.y);
     if (!hit) { selectNote(-1); return; }
@@ -1149,48 +1167,35 @@ function setupNoteEditor() {
       orig: { pitch: n.pitch, tOn: n.tOn, tOff: n.tOff },
       snap: noteSnapshot()
     };
+    try { roll.setPointerCapture(e.pointerId); } catch (err) {}
   });
 
-  roll.addEventListener('mousemove', function (e) {
-    if (noteEdit.drag) return;
+  roll.addEventListener('pointermove', function (e) {
+    if (noteEdit.drag) {
+      var dragPos = rollMousePos(e);
+      var geo = rollGeometry();
+      var dn = state.notes[noteEdit.drag.idx];
+      var dOrig = noteEdit.drag.orig;
+      if (noteEdit.drag.mode === 'move') {
+        var dTime = ((dragPos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
+        dn.tOn = Math.max(0, dOrig.tOn + dTime);
+        var dPitch = Math.round((noteEdit.drag.startY - dragPos.y) / geo.rowH);
+        dn.pitch = Math.min(KEY_HIGH, Math.max(KEY_LOW, dOrig.pitch + dPitch));
+      } else {
+        var dTime2 = ((dragPos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
+        dn.tOff = Math.max(dn.tOn + 30, dOrig.tOff + dTime2);
+      }
+      drawRoll();
+      return;
+    }
     if (state.recording) { roll.style.cursor = 'default'; return; }
     var pos = rollMousePos(e);
     var hit = hitTestNote(pos.x, pos.y);
     roll.style.cursor = hit ? (hit.mode === 'resize' ? 'ew-resize' : 'move') : 'default';
   });
 
-  window.addEventListener('mousemove', function (e) {
-    if (!noteEdit.drag) return;
-    var pos = rollMousePos(e);
-    var geo = rollGeometry();
-    var n = state.notes[noteEdit.drag.idx];
-    var o = noteEdit.drag.orig;
-    if (noteEdit.drag.mode === 'move') {
-      var dt = ((pos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
-      var newTOn = Math.max(0, o.tOn + dt);
-      var dp = Math.round((noteEdit.drag.startY - pos.y) / geo.rowH);
-      var newPitch = Math.min(KEY_HIGH, Math.max(KEY_LOW, o.pitch + dp));
-      n.tOn = newTOn;
-      n.pitch = newPitch;
-    } else {
-      var dt2 = ((pos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
-      var newTOff = Math.max(n.tOn + 30, o.tOff + dt2);
-      n.tOff = newTOff;
-    }
-    drawRoll();
-  });
-
-  window.addEventListener('mouseup', function () {
-    if (!noteEdit.drag) return;
-    var o = noteEdit.drag.orig;
-    var n = state.notes[noteEdit.drag.idx];
-    var snap = noteEdit.drag.snap;
-    noteEdit.drag = null;
-    if (n.pitch !== o.pitch || Math.abs(n.tOn - o.tOn) > 1 || Math.abs(n.tOff - o.tOff) > 1) {
-      notePushUndo(snap);
-      afterNoteEdit();
-    }
-  });
+  roll.addEventListener('pointerup', finishNoteDrag);
+  roll.addEventListener('pointercancel', finishNoteDrag);
 
   $('noteDown').addEventListener('click', function () { transposeNotes(-1); });
   $('noteUp').addEventListener('click', function () { transposeNotes(1); });
@@ -3682,11 +3687,22 @@ $('btnZoomOut').addEventListener('click', function () { zoomBy(1.7, edit.playhea
 $('btnZoomFit').addEventListener('click', zoomFit);
 $('chkLoop').addEventListener('change', function (e) { edit.loop = e.target.checked; });
 
-waveCanvas.addEventListener('mousedown', onWaveDown);
-window.addEventListener('mousemove', onWaveMove);
-window.addEventListener('mouseup', onWaveUp);
+waveCanvas.addEventListener('pointerdown', function (e) {
+  e.preventDefault();
+  try { waveCanvas.setPointerCapture(e.pointerId); } catch (err) {}
+  onWaveDown(e);
+});
+waveCanvas.addEventListener('pointermove', onWaveMove);
+waveCanvas.addEventListener('pointerup', function (e) {
+  onWaveUp();
+  try { waveCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+});
+waveCanvas.addEventListener('pointercancel', function (e) {
+  onWaveUp();
+  try { waveCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+});
 
-waveCanvas.addEventListener('mousemove', function (e) {
+waveCanvas.addEventListener('pointermove', function (e) {
   if (dragMode || !edit.srcBuf) return;
   var x = localX(e);
   var y = e.clientY - waveCanvas.getBoundingClientRect().top;
@@ -3750,9 +3766,21 @@ waveCanvas.addEventListener('keydown', function (e) {
 });
 
 fitOverview();
-ovCanvas.addEventListener('mousedown', function (e) { ovDrag = true; ovSeek(e.clientX); });
-window.addEventListener('mousemove', function (e) { if (ovDrag) ovSeek(e.clientX); });
-window.addEventListener('mouseup', function () { ovDrag = false; });
+ovCanvas.addEventListener('pointerdown', function (e) {
+  e.preventDefault();
+  ovDrag = true;
+  try { ovCanvas.setPointerCapture(e.pointerId); } catch (err) {}
+  ovSeek(e.clientX);
+});
+ovCanvas.addEventListener('pointermove', function (e) { if (ovDrag) ovSeek(e.clientX); });
+ovCanvas.addEventListener('pointerup', function (e) {
+  ovDrag = false;
+  try { ovCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+});
+ovCanvas.addEventListener('pointercancel', function (e) {
+  ovDrag = false;
+  try { ovCanvas.releasePointerCapture(e.pointerId); } catch (err) {}
+});
 
 /* ---------- 拖拽导入 ---------- */
 function pickAudio(files) {
@@ -3901,11 +3929,27 @@ function idbGetAll() {
 /* ============================================================
    版本快照
    ============================================================ */
+var SNAP_MAX = 20;
+
 function snapMeta(v) {
   var parts = [];
   if (v.clips && v.clips.length) parts.push(v.clips.length + ' 段音频');
   if (v.notes && v.notes.length) parts.push(v.notes.length + ' 个音符');
   return parts.join(' · ') || '空';
+}
+
+function snapTimestamp(key) {
+  var m = String(key).match(/^snap_(\d+)/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function pruneSnapshots() {
+  return idbGetAll().then(function (rows) {
+    var snaps = rows.filter(function (r) { return String(r.key).indexOf('snap_') === 0; })
+      .sort(function (a, b) { return snapTimestamp(b.key) - snapTimestamp(a.key); });
+    if (snaps.length <= SNAP_MAX) return true;
+    return Promise.all(snaps.slice(SNAP_MAX).map(function (s) { return idbDel(s.key); })).then(function () { return true; });
+  });
 }
 
 function saveSnapshot(silent) {
@@ -3914,8 +3958,10 @@ function saveSnapshot(silent) {
   if (edit.srcBuf) {
     try { meta.audioBlob = encodeWav(edit.srcBuf); } catch (e) {}
   }
-  var key = 'snap_' + Date.now();
+  var key = 'snap_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
   return idbPut(key, meta).then(function () {
+    return pruneSnapshots();
+  }).then(function () {
     listSnapshots();
     if (!silent) {
       var d = new Date();
@@ -3933,14 +3979,14 @@ function listSnapshots() {
   if (!host) return;
   idbGetAll().then(function (rows) {
     var snaps = rows.filter(function (r) { return String(r.key).indexOf('snap_') === 0; })
-      .sort(function (a, b) { return b.key.localeCompare(a.key); });
+      .sort(function (a, b) { return snapTimestamp(b.key) - snapTimestamp(a.key); });
     if (!snaps.length) {
       host.innerHTML = '<p class="hint">还没有快照。点「保存当前版本」记录一个可恢复的历史点。</p>';
       return;
     }
     host.textContent = '';
     snaps.forEach(function (s) {
-      var ts = parseInt(String(s.key).slice(5), 10) || 0;
+      var ts = snapTimestamp(s.key);
       var d = new Date(ts);
       var v = s.val || {};
       var row = document.createElement('div');
@@ -4461,4 +4507,10 @@ if (new URLSearchParams(location.search).has('selftest')) {
 }
 
 setPill('未连接');
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  });
+}
 })();

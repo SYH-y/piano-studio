@@ -1,0 +1,39 @@
+name: Validate PIANO STUDIO
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Check JavaScript syntax
+        run: node --check app.js
+
+      - name: Start local server
+        run: python -m http.server 8765 --bind 127.0.0.1 >/tmp/piano-studio-http.log 2>&1 &
+
+      - name: Check static entrypoint
+        run: curl --fail --silent --show-error http://127.0.0.1:8765/index.html | grep -q 'PIANO STUDIO'
+
+      - name: Install Chromium
+        run: npx --yes @playwright/test@1.50.0 install --with-deps chromium
+
+      - name: Run browser smoke test
+        run: npx --yes @playwright/test@1.50.0 test .github/smoke.spec.cjs --reporter=line
