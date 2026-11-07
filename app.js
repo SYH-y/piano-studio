@@ -2415,6 +2415,12 @@ function setWorkspace(name) {
     tab.classList.toggle('active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   });
+  var layout = document.querySelector('.layout');
+  var aside = layout && layout.querySelector('aside');
+  var asideVisible = aside && Array.prototype.some.call(aside.querySelectorAll('[data-workspace]'), function (el) {
+    return !el.classList.contains('workspace-hidden');
+  });
+  if (layout) layout.classList.toggle('workspace-single', !asideVisible);
   document.body.setAttribute('data-workspace', name);
   if (name === 'edit') {
     setTimeout(function () { fitWave(); fitOverview(); }, 30);
