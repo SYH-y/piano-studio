@@ -768,6 +768,7 @@ function startRecNow() {
   state.notes = [];
   state.pending = {};
   state.ccs = [];
+  practiceUpdate();
   state.lastDur = 0;
   noteEdit.selected = -1;
   noteEdit.undo = [];
