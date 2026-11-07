@@ -2,6 +2,41 @@
 
 本项目的版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v1.1.0 — 2026-11-07
+
+两条主线：**代码拆分** + **Web MIDI（USB 线）支持**。自检 45 → **50 条**。
+
+### 代码拆分
+
+单文件 `index.html`（约 3400 行）拆成三个文件，后续改动风险更低：
+
+- `index.html` —— 仅剩结构（约 270 行）
+- `styles.css` —— 全部样式
+- `app.js` —— 全部逻辑
+
+`node --check` 校验通过，功能零变化，自检仍全绿。
+
+### Web MIDI / USB-MIDI 支持
+
+补上 Web MIDI API，覆盖**没有蓝牙、只有 USB 线**的电钢琴。
+
+- 顶部新增 **USB** 按钮，弹出端口菜单：列出所有 MIDI 输入、显示厂商与状态、可重新扫描、可断开
+- 接入 Web MIDI 后与 BLE 共用同一条 `handleMessage` 路径，录音/制谱/剪辑全部复用
+- USB 交上来的是**完整 MIDI 消息**（不含 BLE 包头与时间戳），直接交给 `handleMessage`，
+  时间戳用本机时钟（USB 无打包延迟，无需设备时间戳补偿）
+- 换琴时自动断开另一端：连 USB 会断开 BLE，连 BLE 会断开 USB，避免双输入叠加
+- `onstatechange` 监听设备插拔，菜单打开时实时刷新
+
+### 新增回归用例
+
+```
+PASS USB 消息交给 handleMessage
+PASS USB Note On 进入 pending
+PASS USB Note Off 落成音符
+PASS 系统实时消息被忽略
+PASS USB 踏板 CC 被记录
+```
+
 ## v1.0.3 — 2026-11-07
 
 界面刷新。功能与逻辑零改动，自检仍 45/45。

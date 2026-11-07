@@ -1,0 +1,3865 @@
+(function () {
+'use strict';
+
+/* ============================================================
+   常量
+   ============================================================ */
+var SERVICE = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
+var CHAR_UUID = '7772e5db-3868-4112-a1a9-f2669d106bf3';
+var SHARP = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+var FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+var LETTER_PC = { c:0, d:2, e:4, f:5, g:7, a:9, b:11 };
+var LETTERS = ['c','d','e','f','g','a','b'];
+var MAJOR_PROFILE = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+var KEY_SIG_NAME = { 0:'C', 1:'G', 2:'D', 3:'A', 4:'E', 5:'B', 6:'F#', '-1':'F', '-2':'Bb', '-3':'Eb', '-4':'Ab', '-5':'Db', '-6':'Gb' };
+
+var $ = function (id) { return document.getElementById(id); };
+
+/* ============================================================
+   状态
+   ============================================================ */
+var state = {
+  connected: false,
+  transport: null,          // 'ble' | 'usb'
+  deviceName: '',
+  recording: false,
+  playing: false,
+  notes: [],
+  pending: {},
+  ccs: [],
+  t0: 0,
+  lastDur: 0,
+  bpm: 90,
+  bpmAuto: true,
+  timeSig: '4/4',
+  gridDiv: 2,
+  keyOverride: 'auto',
+  wet: 0.38,
+  vol: 0.8,
+  view: 'roll'
+};
+
+/* ============================================================
+   音频引擎
+   ============================================================ */
+var actx = null, live = null;
+var samples = new Map();
+var samplesReady = false;
+var activeNodes = [];
+
+function stopAllSound() {
+  for (var i = 0; i < activeNodes.length; i++) {
+    try { activeNodes[i].stop(0); } catch (e) {}
+  }
+  activeNodes = [];
+}
+
+// 播放过的节点必须自己退场，否则长录音会把上万个已结束的节点留在数组里
+function trackNode(node) {
+  activeNodes.push(node);
+  node.onended = function () {
+    var i = activeNodes.indexOf(node);
+    if (i >= 0) activeNodes.splice(i, 1);
+  };
+  return node;
+}
+
+function makeIR(ac, seconds, decay) {
+  var rate = ac.sampleRate, len = Math.floor(rate * seconds);
+  var buf = ac.createBuffer(2, len, rate);
+  for (var c = 0; c < 2; c++) {
+    var d = buf.getChannelData(c);
+    for (var i = 0; i < len; i++) {
+      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+    }
+  }
+  return buf;
+}
+
+function buildGraph(ac, wetAmount, vol) {
+  var master = ac.createGain();
+  master.gain.value = vol;
+
+  var comp = ac.createDynamicsCompressor();
+  comp.threshold.value = -10;
+  comp.knee.value = 8;
+  comp.ratio.value = 5;
+  comp.attack.value = 0.004;
+  comp.release.value = 0.22;
+
+  master.connect(comp);
+  comp.connect(ac.destination);
+
+  var dry = ac.createGain();
+  dry.gain.value = 1;
+  dry.connect(master);
+
+  var conv = ac.createConvolver();
+  conv.buffer = makeIR(ac, 2.6, 2.6);
+  var wet = ac.createGain();
+  wet.gain.value = wetAmount;
+  wet.connect(conv);
+  conv.connect(master);
+
+  return { dry: dry, wet: wet, master: master };
+}
+
+function initLive() {
+  if (actx) return;
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  live = buildGraph(actx, state.wet, state.vol);
+}
+
+function freqOf(p) { return 440 * Math.pow(2, (p - 69) / 12); }
+
+function synthVoice(ac, outs, t, freq, vel, dur, rel) {
+  var amp = Math.pow(vel / 127, 1.5) * 0.17;
+  var partials = [[1,1.00,2.9],[2,0.46,1.7],[3,0.24,1.15],[4,0.13,0.8],[5,0.07,0.55],[6,0.04,0.4]];
+  var bus = ac.createGain();
+  bus.connect(outs.dry);
+  bus.connect(outs.wet);
+
+  var stopAt = t + Math.max(dur, 0.05) + rel + 0.12;
+
+  for (var i = 0; i < partials.length; i++) {
+    var mult = partials[i][0], pa = partials[i][1], pd = partials[i][2];
+    if (freq * mult > ac.sampleRate / 2.2) continue;
+
+    var osc = ac.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * mult * (1 + (Math.random() - 0.5) * 0.0009);
+
+    var g = ac.createGain();
+    var peak = Math.max(amp * pa, 0.0002);
+    var decayTo = Math.max(peak * 0.015, 0.0002);
+    var decayAt = t + Math.max(0.25, 2.4 / pd);
+
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.006);
+    g.gain.exponentialRampToValueAtTime(decayTo, decayAt);
+    g.gain.exponentialRampToValueAtTime(0.0001, Math.max(decayAt + 0.02, t + Math.max(dur, 0.05) + rel));
+
+    osc.connect(g);
+    g.connect(bus);
+    osc.start(t);
+    osc.stop(stopAt);
+    trackNode(osc);
+  }
+  return bus;
+}
+
+function nearestSample(pitch) {
+  var best = null, bestD = 999;
+  samples.forEach(function (buf, key) {
+    var d = Math.abs(key - pitch);
+    if (d < bestD) { bestD = d; best = key; }
+  });
+  return best;
+}
+
+function sampleVoice(ac, outs, t, pitch, vel, dur, rel) {
+  var key = nearestSample(pitch);
+  if (key === null) return false;
+
+  var src = ac.createBufferSource();
+  src.buffer = samples.get(key);
+  src.playbackRate.value = Math.pow(2, (pitch - key) / 12);
+
+  var g = ac.createGain();
+  var amp = Math.pow(vel / 127, 1.1) * 0.9;
+  var end = t + Math.max(dur, 0.06);
+
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(amp, t + 0.004);
+  g.gain.setValueAtTime(amp, end);
+  g.gain.exponentialRampToValueAtTime(0.0001, end + rel);
+
+  src.connect(g);
+  g.connect(outs.dry);
+  g.connect(outs.wet);
+  src.start(t);
+  src.stop(end + rel + 0.1);
+  trackNode(src);
+  return g;
+}
+
+function playTone(ac, outs, t, pitch, vel, dur, rel) {
+  if (samplesReady) {
+    try {
+      var v = sampleVoice(ac, outs, t, pitch, vel, dur, rel);
+      if (v) return v;
+    } catch (e) {}
+  }
+  return synthVoice(ac, outs, t, freqOf(pitch), vel, dur, rel);
+}
+
+async function loadSamples() {
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  var btn = $('btnSamples');
+  btn.disabled = true;
+
+  var pitches = [];
+  for (var p = 21; p <= 108; p += 2) pitches.push(p);
+
+  var ok = 0;
+  for (var i = 0; i < pitches.length; i++) {
+    var pc = pitches[i] % 12;
+    var nm = FLAT[pc] + (Math.floor(pitches[i] / 12) - 1);
+    try {
+      var res = await fetch('samples/' + nm + '.mp3');
+      if (res.ok) {
+        var raw = await res.arrayBuffer();
+        var buf = await actx.decodeAudioData(raw);
+        samples.set(pitches[i], buf);
+        ok++;
+      }
+    } catch (e) {}
+    btn.textContent = '加载中 ' + Math.round((i + 1) / pitches.length * 100) + '%';
+  }
+
+  samplesReady = samples.size > 20;
+  btn.textContent = samplesReady ? '真实采样已就绪（' + samples.size + ' 键）' : '加载失败，改用合成音色';
+  btn.disabled = false;
+}
+
+/* ============================================================
+   键盘
+   ============================================================ */
+var KEY_LOW = 21, KEY_HIGH = 108;
+var keyEls = {};
+
+(function buildKeys() {
+  var host = $('keys');
+  var whites = [];
+  for (var n = KEY_LOW; n <= KEY_HIGH; n++) {
+    var pc = n % 12;
+    if (pc !== 1 && pc !== 3 && pc !== 6 && pc !== 8 && pc !== 10) whites.push(n);
+  }
+  var W = 100 / whites.length;
+
+  whites.forEach(function (n, i) {
+    var d = document.createElement('div');
+    d.className = 'wk';
+    d.style.left = (i * W) + '%';
+    d.style.width = W + '%';
+    if (n % 12 === 0) d.textContent = 'C' + (Math.floor(n / 12) - 1);
+    host.appendChild(d);
+    keyEls[n] = d;
+  });
+
+  for (var m = KEY_LOW; m <= KEY_HIGH; m++) {
+    var p = m % 12;
+    if (p !== 1 && p !== 3 && p !== 6 && p !== 8 && p !== 10) continue;
+    var before = whites.filter(function (w) { return w < m; }).length;
+    var b = document.createElement('div');
+    b.className = 'bk';
+    b.style.left = (before * W - W * 0.31) + '%';
+    b.style.width = (W * 0.62) + '%';
+    host.appendChild(b);
+    keyEls[m] = b;
+  }
+
+  setTimeout(function () {
+    var sc = host.parentNode;
+    if (sc && sc.classList.contains('keys-scroll')) {
+      sc.scrollLeft = (host.scrollWidth - sc.clientWidth) / 2;
+    }
+  }, 30);
+})();
+
+function lightKey(n, on) {
+  var el = keyEls[n];
+  if (!el) return;
+  if (on) el.classList.add('on'); else el.classList.remove('on');
+}
+
+/* ============================================================
+   BLE MIDI
+   ============================================================ */
+/* BLE-MIDI 事件包（BEP）结构：
+ *
+ *   [包头 0x80|ts高6位]  ( [ts低7位] [状态字节] [数据...] )*
+ *
+ * 包头携带 13 位时间戳的高 6 位，每条消息前各带一个低 7 位的时间戳字节。
+ * 时间戳字节可以省略，表示沿用上一个。
+ *
+ * 难点在于时间戳字节（0x80–0xFF）和状态字节（0x80–0xEF）、系统实时消息（0xF8–0xFF）
+ * 的取值范围完全重叠。裁决规则只有一条：
+ *
+ *   时间戳后面一定跟状态字节（>=0x80）；
+ *   状态字节后面一定是数据字节（<0x80）。
+ *
+ * 所以看一眼下一个字节就能定，不需要猜。
+ */
+function createMidiParser() {
+  var carry = [];      // 上一包没消费完的字节
+  var ts = 0;          // 当前生效的时间戳（已解回绕，单位 ms）
+  var lastRaw = -1;    // 上一个原始 13 位时间戳
+  var wrapBase = 0;    // 回绕累计
+
+  function dataLen(status) {
+    var k = status & 0xF0;
+    return (k === 0xC0 || k === 0xD0) ? 1 : 2;   // 音色切换 / 通道压力只有 1 个数据字节
+  }
+
+  function feed(bytes) {
+    var out = [];
+    if (!bytes.length) return out;
+
+    var hi6 = 0, off = 0;
+    if (bytes[0] & 0x80) { hi6 = bytes[0] & 0x3F; off = 1; }
+
+    var buf = carry.concat(Array.prototype.slice.call(bytes, off));
+    carry = [];
+
+    var i = 0;
+    while (i < buf.length) {
+      var b = buf[i];
+      if (b < 0x80) { i++; continue; }            // 孤立的数据字节，丢弃
+
+      var next = buf[i + 1];
+      if (next === undefined) { carry = buf.slice(i); break; }   // 判别不了，等下一包
+
+      if (next >= 0x80) {                          // 后面还是高位字节 → 这是时间戳
+        var raw = (hi6 << 7) | (b & 0x7F);
+        if (lastRaw >= 0 && raw < lastRaw && lastRaw - raw > 4096) wrapBase += 8192;
+        lastRaw = raw;
+        ts = wrapBase + raw;
+        i++;
+        continue;
+      }
+
+      if (b >= 0xF8) { out.push({ ts: ts, msg: [b] }); i++; continue; }   // 实时消息
+      if (b === 0xF0) {                            // SysEx：跳到结束字节，不做解析
+        while (i < buf.length && buf[i] !== 0xF7) i++;
+        i++;
+        continue;
+      }
+      if (b >= 0xF1 && b <= 0xF7) { i++; continue; }  // 其余系统公共消息，跳过
+
+      var n = dataLen(b);
+      if (i + n >= buf.length) { carry = buf.slice(i); break; }
+      out.push({ ts: ts, msg: buf.slice(i, i + n + 1) });
+      i += n + 1;
+    }
+    return out;
+  }
+
+  return {
+    feed: feed,
+    reset: function () { carry = []; ts = 0; lastRaw = -1; wrapBase = 0; }
+  };
+}
+
+var midiParser = createMidiParser();
+
+function nowMs() {
+  return state.recording ? performance.now() - state.t0 : 0;
+}
+
+var monitorNodes = {};
+
+function onNoteOn(pitch, vel, t) {
+  lightKey(pitch, true);
+  if (state.recording) {
+    state.pending[pitch] = { pitch: pitch, vel: vel, tOn: t, tOff: null };
+  }
+  if ($('monitor').checked) {
+    initLive();
+    if (actx.state === 'suspended') actx.resume();
+    // 同一音高连按时，先把上一个还响着的收掉，避免叠成一片
+    var prev = monitorNodes[pitch];
+    if (prev) {
+      try {
+        var tn = actx.currentTime;
+        prev.gain.cancelScheduledValues(tn);
+        prev.gain.setValueAtTime(Math.max(prev.gain.value, 0.0001), tn);
+        prev.gain.exponentialRampToValueAtTime(0.0001, tn + 0.06);
+      } catch (e) {}
+    }
+    // 时值给足，真正的收声交给抬键
+    monitorNodes[pitch] = playTone(actx, live, actx.currentTime + 0.01, pitch, vel, 4, 0.5);
+  }
+  drawRoll();
+}
+
+function onNoteOff(pitch, t) {
+  lightKey(pitch, false);
+
+  var mn = monitorNodes[pitch];
+  if (mn && actx) {
+    delete monitorNodes[pitch];
+    try {
+      var now = actx.currentTime;
+      mn.gain.cancelScheduledValues(now);
+      mn.gain.setValueAtTime(Math.max(mn.gain.value, 0.0001), now);
+      mn.gain.exponentialRampToValueAtTime(0.0001, now + ($('sustain').checked ? 0.6 : 0.18));
+    } catch (e) {}
+  }
+
+  if (state.recording) {
+    var p = state.pending[pitch];
+    if (p) {
+      p.tOff = t;
+      state.notes.push(p);
+      delete state.pending[pitch];
+      $('mNotes').textContent = state.notes.length;
+    }
+  }
+  drawRoll();
+}
+
+function handleMessage(msg, t) {
+  var kind = msg[0] & 0xF0;
+  if (kind === 0x90 && msg.length >= 3 && msg[2] > 0) {
+    onNoteOn(msg[1], msg[2], t);
+  } else if (kind === 0x80 || (kind === 0x90 && msg.length >= 3 && msg[2] === 0)) {
+    onNoteOff(msg[1], t);
+  } else if (kind === 0xB0) {
+    state.ccs.push({ cc: msg[1], value: msg[2], t: t });
+    $('mCc').textContent = state.ccs.length;
+    var label = msg[1] === 64 ? '延音踏板' : ('CC' + msg[1]);
+    $('ccbox').textContent = label + '：B0 ' + msg[1].toString(16).toUpperCase() + ' ' + msg[2].toString(16).toUpperCase() + '（值 ' + msg[2] + '）';
+  }
+}
+
+var bleChar = null;
+var bleDevice = null;
+
+function setPill(text, cls) {
+  $('pillText').textContent = text;
+  $('pill').className = 'pill' + (cls ? ' ' + cls : '');
+}
+
+function disconnectBle() {
+  if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+    try { bleDevice.gatt.disconnect(); } catch (e) {}
+  }
+  bleChar = null;
+  monitorNodes = {};
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    setPill('浏览器不支持蓝牙');
+    alert('这个浏览器不支持 Web Bluetooth。请用 Chrome 或 Edge 打开。');
+    return;
+  }
+  try {
+    // 换琴时先把旧连接断掉，否则旧的 characteristic 监听会一直挂着
+    disconnectBle();
+    disconnectMidiInput(true);
+    $('midiMenu').classList.remove('show');
+
+    $('btnConnect').disabled = true;
+    setPill('搜索中…');
+
+    var device = await navigator.bluetooth.requestDevice({
+      filters: [
+        { services: [SERVICE] },
+        { namePrefix: 'Dight' },
+        { namePrefix: 'Piano' }
+      ],
+      optionalServices: [SERVICE]
+    });
+
+    setPill('连接中…');
+    midiParser.reset();
+    bleDevice = device;
+    var server = await device.gatt.connect();
+    var service = await server.getPrimaryService(SERVICE);
+    bleChar = await service.getCharacteristic(CHAR_UUID);
+    await bleChar.startNotifications();
+
+    bleChar.addEventListener('characteristicvaluechanged', function (ev) {
+      var dv = ev.target.value;
+      var bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+
+      var arrival = nowMs();
+      var list = midiParser.feed(bytes);
+      if (!list.length) return;
+
+      // 包间用本机时钟，包内用设备时间戳做偏移。
+      // 这样既避免设备时钟漂移，又能还原同一包里多个音的真实先后
+      // （否则一个和弦会被压成同一毫秒）。设备时间戳恒定时偏移为 0，自动退回到达时刻。
+      var base = list[0].ts;
+      for (var mi = 0; mi < list.length; mi++) {
+        var off = list[mi].ts - base;
+        if (!(off >= 0 && off <= 500)) off = 0;
+        handleMessage(list[mi].msg, arrival + off);
+      }
+    });
+
+    device.addEventListener('gattserverdisconnected', function () {
+      state.connected = false;
+      bleChar = null;
+      state.transport = null;
+      state.deviceName = '';
+      $('btnConnect').disabled = false;
+      $('btnConnect').textContent = '连接钢琴';
+      setPill('已断开');
+    });
+
+    state.connected = true;
+    state.transport = 'ble';
+    state.deviceName = device.name || 'BLE MIDI';
+    $('btnConnect').disabled = false;
+    $('btnConnect').textContent = '已连接';
+    setPill(state.deviceName, 'on');
+  } catch (err) {
+    $('btnConnect').disabled = false;
+    setPill('未连接');
+    if (err && err.name !== 'NotFoundError') alert('连接失败：' + err.message);
+  }
+}
+
+/* ============================================================
+   Web MIDI（USB 线）
+   ============================================================ */
+/* 与 BLE 的区别：Web MIDI 交上来的是**完整 MIDI 消息**，不含 BLE 的包头和时间戳，
+ * 所以不需要走 createMidiParser，直接交给 handleMessage 即可。
+ * 时间戳用本机时钟——USB 传输没有打包延迟，不需要设备时间戳补偿。
+ */
+var webMidi = { access: null, input: null };
+
+function applyMidiEvent(data, t) {
+  if (!data || !data.length) return false;
+  if (data[0] >= 0xF0) return false;      // 系统公共/实时消息不参与演奏
+  handleMessage(Array.prototype.slice.call(data), t);
+  return true;
+}
+
+function midiMenuClose() {
+  $('midiMenu').classList.remove('show');
+}
+
+function renderMidiMenu() {
+  var host = $('midiMenu');
+  host.textContent = '';
+
+  if (!webMidi.access) {
+    host.innerHTML = '<div class="mempty">没有取到 MIDI 权限。</div>';
+    return;
+  }
+
+  var list = [];
+  webMidi.access.inputs.forEach(function (inp) { list.push(inp); });
+
+  if (!list.length) {
+    var em = document.createElement('div');
+    em.className = 'mempty';
+    em.textContent = '没有发现 MIDI 输入。插上 USB 线、把琴切到 USB/COMPUTER 模式后点下面的「重新扫描」。';
+    host.appendChild(em);
+  }
+
+  list.forEach(function (inp) {
+    var b = document.createElement('button');
+    b.className = 'mi' + (webMidi.input && webMidi.input.id === inp.id ? ' on' : '');
+    b.type = 'button';
+
+    var name = document.createElement('b');
+    name.textContent = inp.name || '未命名 MIDI 输入';
+    var meta = document.createElement('span');
+    var bits = [];
+    if (inp.manufacturer) bits.push(inp.manufacturer);
+    if (inp.state === 'connected') bits.push('已就绪'); else bits.push('已断开');
+    if (webMidi.input && webMidi.input.id === inp.id) bits.push('当前使用中');
+    meta.textContent = bits.join(' · ');
+
+    b.appendChild(name);
+    b.appendChild(meta);
+    b.addEventListener('click', function () {
+      connectMidiInput(inp.id);
+      midiMenuClose();
+    });
+    host.appendChild(b);
+  });
+
+  var sep = document.createElement('div');
+  sep.className = 'msep';
+  host.appendChild(sep);
+
+  var re = document.createElement('button');
+  re.className = 'mi';
+  re.type = 'button';
+  re.innerHTML = '<b>重新扫描</b><span>插拔设备后点这里</span>';
+  re.addEventListener('click', function () { refreshMidiPorts(); });
+  host.appendChild(re);
+
+  if (webMidi.input) {
+    var off = document.createElement('button');
+    off.className = 'mi';
+    off.type = 'button';
+    off.innerHTML = '<b>断开 USB</b><span>回到未连接状态</span>';
+    off.addEventListener('click', function () {
+      disconnectMidiInput();
+      midiMenuClose();
+    });
+    host.appendChild(off);
+  }
+}
+
+async function refreshMidiPorts() {
+  if (!navigator.requestMIDIAccess) {
+    alert('这个浏览器不支持 Web MIDI。Chrome / Edge 89 以上可用。');
+    return;
+  }
+  try {
+    if (!webMidi.access) {
+      webMidi.access = await navigator.requestMIDIAccess({ sysex: false });
+      webMidi.access.onstatechange = function () {
+        if ($('midiMenu').classList.contains('show')) renderMidiMenu();
+      };
+    }
+    renderMidiMenu();
+    $('midiMenu').classList.add('show');
+  } catch (err) {
+    alert('无法访问 MIDI 设备：' + (err && err.message ? err.message : err) +
+          '\n\n如果浏览器弹出了权限提示，请选择「允许」。');
+  }
+}
+
+function connectMidiInput(id) {
+  if (!webMidi.access) return;
+  var inp = webMidi.access.inputs.get(id);
+  if (!inp) { alert('这个端口已经不在了，点「重新扫描」试试。'); return; }
+
+  if (webMidi.input && webMidi.input.id !== id) {
+    try { webMidi.input.onmidimessage = null; } catch (e) {}
+  }
+  disconnectBle();
+
+  inp.onmidimessage = function (ev) {
+    var arrival = nowMs();
+    applyMidiEvent(ev.data, arrival);
+  };
+
+  webMidi.input = inp;
+  state.connected = true;
+  state.transport = 'usb';
+  state.deviceName = inp.name || 'USB MIDI';
+  $('btnConnect').textContent = '已连接';
+  setPill('USB · ' + state.deviceName, 'on');
+  renderMidiMenu();
+}
+
+function disconnectMidiInput(silent) {
+  if (webMidi.input) {
+    try { webMidi.input.onmidimessage = null; } catch (e) {}
+    webMidi.input = null;
+  }
+  if (!silent) {
+    if (state.transport === 'usb') {
+      state.connected = false;
+      state.transport = null;
+      state.deviceName = '';
+      $('btnConnect').textContent = '连接钢琴';
+      setPill('未连接');
+    }
+  }
+}
+
+/* ============================================================
+   录音 / 播放
+   ============================================================ */
+var metro = { timer: null, next: 0, count: 0, spb: 0 };
+
+function metroClick(at, accent) {
+  initLive();
+  var ac = actx;
+  var o = ac.createOscillator();
+  var g = ac.createGain();
+  o.type = 'square';
+  o.frequency.value = accent ? 1800 : 1200;
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(0.20, at + 0.003);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.06);
+  o.connect(g);
+  g.connect(ac.destination);
+  o.start(at);
+  o.stop(at + 0.09);
+  trackNode(o);
+}
+
+function startMetro() {
+  stopMetro();
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+  metro.spb = 60 / state.bpm;
+  metro.next = actx.currentTime + 0.12;
+  metro.count = 0;
+  metro.timer = setInterval(function () {
+    while (metro.next < actx.currentTime + 0.25) {
+      metroClick(metro.next, metro.count % 4 === 0);
+      metro.next += metro.spb;
+      metro.count++;
+    }
+  }, 40);
+}
+
+function stopMetro() {
+  if (metro.timer) { clearInterval(metro.timer); metro.timer = null; }
+}
+
+function runCountIn(cb) {
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+  var spb = 60 / state.bpm;
+  var t0 = actx.currentTime + 0.15;
+  for (var i = 0; i < 4; i++) metroClick(t0 + i * spb, i === 0);
+
+  var left = 4;
+  setPill('预备 ' + left, 'rec');
+  var iv = setInterval(function () {
+    left--;
+    if (left > 0) setPill('预备 ' + left, 'rec');
+  }, spb * 1000);
+
+  setTimeout(function () {
+    clearInterval(iv);
+    setPill('录音中', 'rec');
+    cb();
+  }, (t0 - actx.currentTime + 4 * spb) * 1000);
+}
+
+function startRec() {
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  if ($('chkCountIn').checked) {
+    $('btnRec').disabled = true;
+    runCountIn(function () {
+      $('btnRec').disabled = false;
+      startRecNow();
+    });
+    return;
+  }
+  startRecNow();
+}
+
+function startRecNow() {
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  state.notes = [];
+  state.pending = {};
+  state.ccs = [];
+  state.lastDur = 0;
+  state.recording = true;
+  state.bpmAuto = true;
+  state.t0 = performance.now();
+  if ($('chkMetro').checked) startMetro();
+
+  $('mNotes').textContent = '0';
+  $('mCc').textContent = '0';
+  $('mTime').textContent = '0.0s';
+  $('ccbox').textContent = '等待数据…';
+  $('btnRec').textContent = '■ 停止录音';
+  $('btnRec').classList.add('danger');
+  $('btnPlay').disabled = true;
+  setPill('录音中', 'rec');
+  updateMini();
+  tick();
+}
+
+function stopRec() {
+  state.recording = false;
+  stopMetro();
+  var t = performance.now() - state.t0;
+  Object.keys(state.pending).forEach(function (k) {
+    var p = state.pending[k];
+    p.tOff = t;
+    state.notes.push(p);
+  });
+  state.pending = {};
+  state.lastDur = t / 1000;
+
+  $('mNotes').textContent = state.notes.length;
+  $('mTime').textContent = state.lastDur.toFixed(1) + 's';
+  $('btnRec').textContent = '● 开始录音';
+  $('btnRec').classList.remove('danger');
+  setPill(state.deviceName || '已连接', 'on');
+
+  var has = state.notes.length > 0;
+  $('btnPlay').disabled = !has;
+  $('btnMidi').disabled = !has;
+  $('btnWav').disabled = !has;
+  $('btnMp3').disabled = !has;
+  $('btnStop').disabled = !has;
+
+  if (has) {
+    estimateTempo();
+    buildScore();
+    renderAll();
+  }
+  drawRoll();
+  scheduleSave();
+  updateMini();
+}
+
+var lastLiveRender = 0;
+var lastTempoGuess = 0;
+var lastLiveSig = '';
+
+function tick() {
+  if (!state.recording) return;
+  $('mTime').textContent = ((performance.now() - state.t0) / 1000).toFixed(1) + 's';
+
+  var now = performance.now();
+
+  if (state.bpmAuto && now - lastTempoGuess > 2500 && state.notes.length >= 6) {
+    lastTempoGuess = now;
+    estimateTempo();
+  }
+
+  if (now - lastLiveRender > 700) {
+    lastLiveRender = now;
+    var sig = state.notes.length + ':' + Object.keys(state.pending).length;
+    if (sig !== lastLiveSig) {
+      lastLiveSig = sig;
+      buildScore();
+      renderStaff();
+      renderJianpu();
+    }
+  }
+
+  drawRoll();
+  requestAnimationFrame(tick);
+}
+
+var playTimer = null;
+
+function play() {
+  var done = state.notes.filter(function (n) { return n.tOff !== null; });
+  if (!done.length) return;
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  if (state.playing) stopPlay();
+
+  var rel = $('sustain').checked ? 1.4 : 0.12;
+  var start = actx.currentTime + 0.12;
+  done.forEach(function (n) {
+    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000);
+    playTone(actx, live, start + n.tOn / 1000, n.pitch, n.vel, dur, rel);
+  });
+
+  state.playing = true;
+  $('btnStop').disabled = false;
+  var total = Math.max.apply(null, done.map(function (n) { return n.tOff; })) / 1000;
+  state.playStart = start;
+  state.playTotal = total;
+  setPill('播放中', 'on');
+  animatePlayhead();
+
+  playTimer = setTimeout(function () {
+    state.playing = false;
+    setPill(state.deviceName || '已连接', 'on');
+    drawRoll();
+  }, (total + 1.6) * 1000);
+}
+
+function stopPlay() {
+  state.playing = false;
+  stopAllSound();
+  if (playTimer) clearTimeout(playTimer);
+  drawRoll();
+}
+
+function animatePlayhead() {
+  if (!state.playing) return;
+  drawRoll();
+  requestAnimationFrame(animatePlayhead);
+}
+
+/* ============================================================
+   卷帘
+   ============================================================ */
+var roll = null, rctx = null;
+
+function fitRoll() {
+  roll = $('roll');
+  rctx = roll.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  roll.width = Math.floor(roll.clientWidth * dpr);
+  roll.height = Math.floor(230 * dpr);
+  rctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawRoll();
+}
+
+function drawRoll() {
+  if (!rctx) return;
+  var w = roll.clientWidth, h = 230;
+  rctx.clearRect(0, 0, w, h);
+
+  var top = 22, drawH = h - top - 10;
+
+  if (!state.notes.length && !state.recording) {
+    rctx.fillStyle = '#b6b5ad';
+    rctx.font = '13px system-ui, sans-serif';
+    rctx.fillText('录一段，这里会显示音符', 14, h / 2);
+    return;
+  }
+
+  var allNotes = state.notes.concat(Object.keys(state.pending).map(function (k) { return state.pending[k]; }));
+  var lo = 108, hi = 21;
+  allNotes.forEach(function (n) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; });
+  lo = Math.max(KEY_LOW, lo - 3);
+  hi = Math.min(KEY_HIGH, hi + 3);
+  if (hi - lo < 20) {
+    var mid = Math.round((hi + lo) / 2);
+    lo = Math.max(KEY_LOW, mid - 10);
+    hi = Math.min(KEY_HIGH, mid + 10);
+  }
+  var span = hi - lo + 1;
+  var rowH = drawH / span;
+
+  rctx.strokeStyle = '#eeede7';
+  rctx.lineWidth = 1;
+  for (var p = lo; p <= hi; p++) {
+    if (p % 12 === 0) {
+      var y = top + drawH - (p - lo + 1) * rowH;
+      rctx.beginPath();
+      rctx.moveTo(0, Math.round(y) + 0.5);
+      rctx.lineTo(w, Math.round(y) + 0.5);
+      rctx.stroke();
+    }
+  }
+
+  var elapsed = state.recording ? (performance.now() - state.t0) / 1000 : state.lastDur;
+  var tMax = Math.max(3, elapsed);
+
+  rctx.fillStyle = '#b6b5ad';
+  rctx.font = '11px system-ui, sans-serif';
+  rctx.strokeStyle = '#e6e5de';
+  for (var s = 0; s <= Math.ceil(tMax); s++) {
+    var x = (s / tMax) * w;
+    rctx.beginPath();
+    rctx.moveTo(Math.round(x) + 0.5, top - 6);
+    rctx.lineTo(Math.round(x) + 0.5, h);
+    rctx.stroke();
+    if (s % Math.max(1, Math.ceil(tMax / 8)) === 0) {
+      rctx.fillText(s + 's', x + 3, 12);
+    }
+  }
+
+  var all = allNotes;
+  all.forEach(function (n) {
+    var t0 = n.tOn / 1000;
+    var t1 = n.tOff !== null ? n.tOff / 1000 : elapsed;
+    var x0 = (t0 / tMax) * w;
+    var ww = Math.max(2, ((t1 - t0) / tMax) * w);
+    var y = top + drawH - (n.pitch - lo + 1) * rowH;
+    var v = n.vel / 127;
+    rctx.fillStyle = 'rgba(15,110,86,' + (0.2 + v * 0.75).toFixed(2) + ')';
+    rctx.fillRect(x0, y, ww, Math.max(3, rowH - 0.6));
+  });
+
+  if (state.playing && actx) {
+    var now = actx.currentTime - state.playStart;
+    if (now >= 0) {
+      var px = (now / tMax) * w;
+      rctx.strokeStyle = '#c2453f';
+      rctx.lineWidth = 1.5;
+      rctx.beginPath();
+      rctx.moveTo(px, top - 6);
+      rctx.lineTo(px, h);
+      rctx.stroke();
+    }
+  }
+}
+
+/* ============================================================
+   制谱分析：量化 → 和弦 → 小节
+   ============================================================ */
+var score = null;
+
+var NOTE_DURS = [
+  { b: 4, d: 'w' }, { b: 3, d: 'h', dot: 1 }, { b: 2, d: 'h' },
+  { b: 1.5, d: 'q', dot: 1 }, { b: 1, d: 'q' },
+  { b: 0.75, d: '8', dot: 1 }, { b: 0.5, d: '8' }, { b: 0.25, d: '16' }
+];
+var REST_DURS = [{ b: 4, d: 'w' }, { b: 2, d: 'h' }, { b: 1, d: 'q' }, { b: 0.5, d: '8' }, { b: 0.25, d: '16' }];
+
+function decompose(len, table) {
+  var out = [], left = len;
+  while (left > 0.001) {
+    var hit = null;
+    for (var i = 0; i < table.length; i++) {
+      if (table[i].b <= left + 0.001) { hit = table[i]; break; }
+    }
+    if (!hit) break;
+    out.push(hit);
+    left -= hit.b;
+  }
+  return out;
+}
+
+function snapDown(len) {
+  for (var i = 0; i < NOTE_DURS.length; i++) {
+    if (NOTE_DURS[i].b <= len + 0.001) return NOTE_DURS[i];
+  }
+  return NOTE_DURS[NOTE_DURS.length - 1];
+}
+
+function syncBpmLabel() {
+  var el = $('mBpm');
+  if (el) el.textContent = state.bpm;
+}
+
+function estimateTempo() {
+  var starts = state.notes.map(function (n) { return n.tOn; }).sort(function (a, b) { return a - b; });
+  if (starts.length < 4) return;
+  var gaps = [];
+  for (var i = 1; i < starts.length; i++) {
+    var g = starts[i] - starts[i - 1];
+    if (g > 60 && g < 3000) gaps.push(g);
+  }
+  if (!gaps.length) return;
+  gaps.sort(function (a, b) { return a - b; });
+  var med = gaps[Math.floor(gaps.length / 2)];
+  var bpm = Math.round(60000 / med);
+  while (bpm > 180) bpm = Math.round(bpm / 2);
+  while (bpm < 50) bpm = Math.round(bpm * 2);
+  if (bpm >= 50 && bpm <= 200) {
+    state.bpm = bpm;
+    $('bpm').value = bpm;
+    $('bpmVal').textContent = bpm;
+    syncBpmLabel();
+  }
+}
+
+function detectKey(list) {
+  var src = list || state.notes;
+  var hist = new Array(12).fill(0);
+  src.forEach(function (n) {
+    hist[n.pitch % 12] += Math.max(0.2, (n.tOff - n.tOn) / 1000);
+  });
+  var best = 0, bestScore = -1;
+  for (var t = 0; t < 12; t++) {
+    var sc = 0;
+    for (var pc = 0; pc < 12; pc++) {
+      sc += hist[pc] * MAJOR_PROFILE[(pc - t + 12) % 12];
+    }
+    if (sc > bestScore) { bestScore = sc; best = t; }
+  }
+  return best;
+}
+
+function keyInfoFor(tonicPc) {
+  var TONIC_LETTER = [0,0,1,2,2,3,3,4,5,5,6,6];
+  var startLetter = TONIC_LETTER[tonicPc];
+  var letters = [];
+  for (var k = 0; k < 7; k++) letters.push(LETTERS[(startLetter + k) % 7]);
+
+  var scaleOff = [0, 2, 4, 5, 7, 9, 11];
+  var spelling = {};
+
+  for (var j = 0; j < 7; j++) {
+    var pc = (tonicPc + scaleOff[j]) % 12;
+    var letter = letters[j];
+    var base = LETTER_PC[letter];
+    var acc = ((pc - base) % 12 + 12) % 12;
+    var accSym = (acc === 0) ? 0 : (acc === 11 ? -1 : 1);
+    spelling[pc] = { letter: letter, acc: accSym };
+  }
+
+  var SIG_BY_TONIC = { 0:0, 7:1, 2:2, 9:3, 4:4, 11:5, 6:6, 5:-1, 10:-2, 3:-3, 8:-4, 1:-5 };
+  var sig = SIG_BY_TONIC[tonicPc];
+  if (sig === undefined) sig = 0;
+
+  // 调外音按调号方向取等音拼写。
+  // 原来用「下方音级 + 一个升号」推导，F# / C# 调会得到重升号，
+  // 而渲染层只支持 ±1 个升降号，重升会被当成还原音，音高整体错位。
+  var SHARP_SPELL = [
+    { letter:'c', acc:0 }, { letter:'c', acc:1 }, { letter:'d', acc:0 }, { letter:'d', acc:1 },
+    { letter:'e', acc:0 }, { letter:'f', acc:0 }, { letter:'f', acc:1 }, { letter:'g', acc:0 },
+    { letter:'g', acc:1 }, { letter:'a', acc:0 }, { letter:'a', acc:1 }, { letter:'b', acc:0 }
+  ];
+  var FLAT_SPELL = [
+    { letter:'c', acc:0 }, { letter:'d', acc:-1 }, { letter:'d', acc:0 }, { letter:'e', acc:-1 },
+    { letter:'e', acc:0 }, { letter:'f', acc:0 }, { letter:'g', acc:-1 }, { letter:'g', acc:0 },
+    { letter:'a', acc:-1 }, { letter:'a', acc:0 }, { letter:'b', acc:-1 }, { letter:'b', acc:0 }
+  ];
+  var chrom = sig >= 0 ? SHARP_SPELL : FLAT_SPELL;
+
+  for (var pc2 = 0; pc2 < 12; pc2++) {
+    if (spelling[pc2]) continue;
+    spelling[pc2] = { letter: chrom[pc2].letter, acc: chrom[pc2].acc };
+  }
+
+  return {
+    tonicPc: tonicPc,
+    tonicMidi: 60 + tonicPc,
+    sig: sig,
+    sigName: KEY_SIG_NAME[String(sig)] || 'C',
+    spelling: spelling
+  };
+}
+
+function vexKey(pitch, ki) {
+  var pc = pitch % 12;
+  var sp = ki.spelling[pc];
+  var letter = sp ? sp.letter : 'c';
+  var acc = sp ? sp.acc : 0;
+  var accStr = acc === 1 ? '#' : (acc === -1 ? 'b' : '');
+  return letter + accStr + '/' + (Math.floor(pitch / 12) - 1);
+}
+
+function buildScore() {
+  var src = state.notes.slice();
+  if (state.recording) {
+    var nowT = performance.now() - state.t0;
+    Object.keys(state.pending).forEach(function (k) {
+      var p = state.pending[k];
+      src.push({ pitch: p.pitch, vel: p.vel, tOn: p.tOn, tOff: Math.max(nowT, p.tOn + 90) });
+    });
+  }
+  if (!src.length) { score = null; return null; }
+
+  var bpm = state.bpm;
+  var spb = 60 / bpm;
+  var gb = 1 / state.gridDiv;
+
+  var tonic = state.keyOverride === 'auto' ? detectKey(src) : parseInt(state.keyOverride, 10);
+  var ki = keyInfoFor(tonic);
+
+  var sigParts = (state.timeSig || '4/4').split('/');
+  var sigNum = parseInt(sigParts[0], 10) || 4;
+  var sigDen = parseInt(sigParts[1], 10) || 4;
+  var barLen = sigNum * 4 / sigDen;
+
+  function chordsFor(staffTest) {
+    var map = {};
+    src.forEach(function (n) {
+      if (!staffTest(n.pitch)) return;
+      var s = Math.round((n.tOn / 1000 / spb) / gb) * gb;
+      var e = Math.round((n.tOff / 1000 / spb) / gb) * gb;
+      if (e <= s) e = s + gb;
+      var k = s.toFixed(3);
+      if (!map[k]) map[k] = { s: s, e: e, pitches: [] };
+      map[k].pitches.push(n.pitch);
+      if (e > map[k].e) map[k].e = e;
+    });
+    var list = Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return a.s - b.s; });
+    for (var i = 0; i < list.length; i++) {
+      var next = i + 1 < list.length ? list[i + 1].s : 1e9;
+      var dur = Math.min(list[i].e - list[i].s, next - list[i].s, barLen);
+      list[i].dur = dur > 0 ? dur : gb;
+    }
+    return list;
+  }
+
+  function measures(list) {
+    var nMeas = Math.max(1, Math.ceil(((list.length ? list[list.length - 1].s + 1 : 0)) / barLen));
+    var out = [], ci = 0;
+    for (var m = 0; m < nMeas; m++) {
+      var items = [];
+      var cursor = m * barLen;
+      var guard = 0;
+      while (ci < list.length && list[ci].s < (m + 1) * barLen && guard++ < 64) {
+        var c = list[ci];
+        if (c.s < cursor) { ci++; continue; }
+        if (c.s > cursor + 0.001) {
+          decompose(c.s - cursor, REST_DURS).forEach(function (r) {
+            items.push({ rest: true, b: r.b, d: r.d });
+          });
+          cursor = c.s;
+        }
+        var remain = (m + 1) * barLen - cursor;
+        var sd = snapDown(Math.min(c.dur, remain));
+        items.push({ rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, pitches: c.pitches.slice().sort(function (a, b) { return a - b; }) });
+        cursor += sd.b;
+        ci++;
+      }
+      var left = (m + 1) * barLen - cursor;
+      if (left > 0.001) {
+        decompose(left, REST_DURS).forEach(function (r) {
+          items.push({ rest: true, b: r.b, d: r.d });
+        });
+      }
+      out.push(items);
+    }
+    return out;
+  }
+
+  var treble = measures(chordsFor(function (p) { return p >= 60; }));
+  var bass = measures(chordsFor(function (p) { return p < 60; }));
+
+  var n = Math.max(treble.length, bass.length);
+  function padMeasure() {
+    return decompose(barLen, REST_DURS).map(function (r) {
+      return { rest: true, b: r.b, d: r.d };
+    });
+  }
+  while (treble.length < n) treble.push(padMeasure());
+  while (bass.length < n) bass.push(padMeasure());
+
+  score = { treble: treble, bass: bass, n: n, key: ki, bpm: bpm, sig: sigNum + '/' + sigDen };
+  return score;
+}
+
+/* ============================================================
+   五线谱（VexFlow）
+   ============================================================ */
+function renderStaff() {
+  var host = $('staffHost');
+  host.innerHTML = '';
+
+  if (!window.Vex || !window.Vex.Flow) {
+    host.innerHTML = '<p class="empty">乐谱库没有加载成功，检查 lib/vexflow.js 是否存在。</p>';
+    return;
+  }
+  if (!score) {
+    host.innerHTML = '<p class="empty">录一段，这里会生成五线谱</p>';
+    return;
+  }
+
+  var per = 3;
+  var width = Math.max(720, host.clientWidth || 720);
+  var systems = Math.ceil(score.n / per);
+  var sysH = 212;
+  var height = systems * sysH + 18;
+
+  var renderer, ctx;
+  try {
+    renderer = new Vex.Flow.Renderer(host, Vex.Flow.Renderer.Backends.SVG);
+    renderer.resize(width, height);
+    ctx = renderer.getContext();
+  } catch (e) {
+    host.innerHTML = '<p class="empty">乐谱渲染器初始化失败：' + e.message + '</p>';
+    return;
+  }
+
+  for (var s = 0; s < systems; s++) {
+    var yTop = s * sysH + 18;
+    var yBot = yTop + 104;
+
+    var cols = Math.min(per, score.n - s * per);
+    var mw = (width - 24) / cols;
+
+    for (var m = 0; m < cols; m++) {
+      var idx = s * per + m;
+      if (idx >= score.n) break;
+
+      var x = 12 + m * mw;
+
+      var tStave = new Vex.Flow.Stave(x, yTop, mw);
+      var bStave = new Vex.Flow.Stave(x, yBot, mw);
+
+      if (m === 0) {
+        tStave.addClef('treble');
+        bStave.addClef('bass');
+      }
+      if (idx === 0) {
+        tStave.addTimeSignature(score.sig || '4/4');
+        bStave.addTimeSignature(score.sig || '4/4');
+        if (score.key.sigName !== 'C') {
+          try { tStave.addKeySignature(score.key.sigName); bStave.addKeySignature(score.key.sigName); } catch (e) {}
+        }
+      }
+
+      tStave.setContext(ctx).draw();
+      bStave.setContext(ctx).draw();
+
+      try {
+        drawMeasure(ctx, tStave, bStave, score.treble[idx], score.bass[idx], score.key);
+      } catch (e2) {
+        console.warn('measure draw failed', idx, e2);
+      }
+    }
+  }
+}
+
+function drawMeasure(ctx, tStave, bStave, tItems, bItems, ki) {
+  drawVoice(ctx, tStave, tItems, 'treble', ki);
+  drawVoice(ctx, bStave, bItems, 'bass', ki);
+}
+
+function drawVoice(ctx, stave, items, clef, ki) {
+  var notes = [];
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    if (it.rest) {
+      notes.push(new Vex.Flow.StaveNote({
+        clef: clef,
+        keys: [clef === 'treble' ? 'b/4' : 'd/3'],
+        duration: it.d + 'r'
+      }));
+    } else {
+      var keys = it.pitches.map(function (p) { return vexKey(p, ki); });
+      // dots 必须在构造时传入：事后 buildAndAttach 只画符头，不会计入 tick，
+      // 结果是每出现一个附点音符，小节就少算半拍。
+      var sn = new Vex.Flow.StaveNote({
+        clef: clef,
+        keys: keys,
+        duration: it.d,
+        dots: it.dot || 0,
+        auto_stem: true
+      });
+      notes.push(sn);
+    }
+  }
+  if (!notes.length) return;
+
+  var sigP = (score.sig || '4/4').split('/');
+  var voice = new Vex.Flow.Voice({
+    num_beats: parseInt(sigP[0], 10) || 4,
+    beat_value: parseInt(sigP[1], 10) || 4
+  });
+  voice.setStrict(false);
+  voice.addTickables(notes);
+
+  try {
+    if (Vex.Flow.Accidental && Vex.Flow.Accidental.applyAccidentals) {
+      Vex.Flow.Accidental.applyAccidentals([voice], ki.sigName === 'F#' ? 'F#' : ki.sigName);
+    }
+  } catch (e) {}
+
+  var beams = null;
+  try {
+    var sigG = (score.sig || '4/4').split('/');
+    var grp = (parseInt(sigG[1], 10) === 8)
+      ? [new Vex.Flow.Fraction(3, 8)]
+      : [new Vex.Flow.Fraction(2, 8)];
+    beams = Vex.Flow.Beam.generateBeams(notes, {
+      beam_rests: false,
+      maintain_stem_directions: false,
+      groups: grp
+    });
+    beams.forEach(function (b) { b.setContext(ctx); });
+  } catch (e) {
+    beams = null;
+  }
+
+  var fmt = new Vex.Flow.Formatter();
+  fmt.joinVoices([voice]).format([voice], stave.getWidth() - 34);
+  voice.draw(ctx, stave);
+
+  if (beams) {
+    for (var gi = 0; gi < beams.length; gi++) {
+      try { beams[gi].draw(); } catch (e) {}
+    }
+  }
+}
+
+/* ============================================================
+   简谱
+   ============================================================ */
+function renderJianpu() {
+  var host = $('jianpuHost');
+  host.innerHTML = '';
+
+  if (!score) {
+    host.innerHTML = '<p class="empty">录一段，这里会生成简谱</p>';
+    return;
+  }
+
+  var ki = score.key;
+  var scaleOff = [0, 2, 4, 5, 7, 9, 11];
+  var wrap = document.createElement('div');
+  wrap.className = 'jp-wrap';
+
+  function degreeOf(pitch) {
+    var rel = pitch - ki.tonicMidi;
+    var oct = Math.floor(rel / 12);
+    var off = rel - oct * 12;
+    for (var d = 0; d < 7; d++) {
+      if (scaleOff[d] === off) return { digit: d + 1, acc: '', oct: oct };
+    }
+    for (var d2 = 6; d2 >= 0; d2--) {
+      if (scaleOff[d2] < off) return { digit: d2 + 1, acc: '#', oct: oct };
+    }
+    return { digit: 1, acc: '', oct: oct };
+  }
+
+  // 把一条声部渲染进一行，返回这一行是否有实际音符
+  function emit(items, row) {
+    var hasNote = false;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var el = document.createElement('div');
+      el.className = 'jp-item';
+
+      if (it.rest) {
+        el.innerHTML = '<span class="jp-dots-top">&nbsp;</span><span class="jp-rest">0</span><span class="jp-dots-bot">&nbsp;</span>';
+        if (it.b >= 2) el.innerHTML += '<span class="jp-hold">' + new Array(Math.round(it.b)).join('– ') + '</span>';
+      } else {
+        hasNote = true;
+        var inner = document.createElement('div');
+        inner.className = 'jp-chord jp-inner';
+
+        it.pitches.forEach(function (p) {
+          var info = degreeOf(p);
+          var line = document.createElement('span');
+          line.className = 'jp-num';
+          line.textContent = (info.acc || '') + info.digit;
+          var holder = document.createElement('div');
+          holder.style.display = 'flex';
+          holder.style.flexDirection = 'column';
+          holder.style.alignItems = 'center';
+
+          var top = document.createElement('span');
+          top.className = 'jp-dots-top';
+          top.textContent = info.oct > 0 ? new Array(info.oct + 1).join('·') : '\u00a0';
+
+          var bot = document.createElement('span');
+          bot.className = 'jp-dots-bot';
+          bot.textContent = info.oct < 0 ? new Array(-info.oct + 1).join('·') : '\u00a0';
+
+          holder.appendChild(top);
+          holder.appendChild(line);
+          holder.appendChild(bot);
+          inner.appendChild(holder);
+        });
+
+        if (it.b < 1) {
+          inner.classList.add(it.b <= 0.25 ? 'jp-u2' : 'jp-u1');
+        }
+
+        el.appendChild(inner);
+
+        if (it.b >= 2) {
+          var hold = document.createElement('span');
+          hold.className = 'jp-hold';
+          hold.textContent = it.b >= 4 ? '– – –' : (it.b >= 3 ? '– –' : '–');
+          el.appendChild(hold);
+        }
+        if (it.dot) {
+          var dotEl = document.createElement('span');
+          dotEl.className = 'jp-hold';
+          dotEl.textContent = '·';
+          el.appendChild(dotEl);
+        }
+      }
+      row.appendChild(el);
+    }
+    return hasNote;
+  }
+
+  for (var m = 0; m < score.n; m++) {
+    var meas = document.createElement('div');
+    meas.className = 'jp-measure';
+
+    var tRow = document.createElement('div');
+    tRow.className = 'jp-row';
+    emit(score.treble[m] || [], tRow);
+
+    var bRow = document.createElement('div');
+    bRow.className = 'jp-row bass';
+    var bHas = emit(score.bass[m] || [], bRow);
+
+    meas.appendChild(tRow);
+    if (bHas) meas.appendChild(bRow);
+    wrap.appendChild(meas);
+  }
+
+  host.appendChild(wrap);
+  var note = document.createElement('p');
+  note.className = 'notation-note';
+  note.textContent = '调性：' + FLAT[ki.tonicPc] + ' 大调　速度：' + score.bpm + ' BPM　网格：1/' + (state.gridDiv * 4);
+  host.appendChild(note);
+}
+
+/* ============================================================
+   视图切换与刷新
+   ============================================================ */
+function renderAll() {
+  if (!score) buildScore();
+  drawRoll();
+  drawWave();
+  renderStaff();
+  renderJianpu();
+  updateMini();
+}
+
+/* ============================================================
+   导出
+   ============================================================ */
+function stamp() {
+  var d = new Date();
+  var p = function (x) { return (x < 10 ? '0' : '') + x; };
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+function download(blob, name) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
+}
+
+function varlen(n) {
+  var out = [n & 0x7F];
+  n >>= 7;
+  while (n > 0) { out.unshift((n & 0x7F) | 0x80); n >>= 7; }
+  return out;
+}
+
+function exportMIDI() {
+  var notes = state.notes.filter(function (n) { return n.tOff !== null; });
+  if (!notes.length) return;
+
+  var PPQ = 480;
+  var TPS = PPQ * state.bpm / 60;
+  var tempoMicro = Math.round(60000000 / state.bpm);
+
+  var evs = [];
+  notes.forEach(function (n) {
+    evs.push([Math.round(n.tOn / 1000 * TPS), [0x90, n.pitch, Math.max(1, n.vel)]]);
+    evs.push([Math.round(n.tOff / 1000 * TPS), [0x80, n.pitch, 0]]);
+  });
+  state.ccs.forEach(function (c) {
+    evs.push([Math.round(c.t / 1000 * TPS), [0xB0, c.cc, c.value]]);
+  });
+  evs.sort(function (a, b) { return a[0] - b[0]; });
+
+  var track = [0x00, 0xFF, 0x51, 0x03,
+    (tempoMicro >> 16) & 255, (tempoMicro >> 8) & 255, tempoMicro & 255];
+  var last = 0;
+  evs.forEach(function (e) {
+    var d = Math.max(0, e[0] - last);
+    last = e[0];
+    varlen(d).forEach(function (b) { track.push(b); });
+    e[1].forEach(function (b) { track.push(b); });
+  });
+  track.push(0x00, 0xFF, 0x2F, 0x00);
+
+  var bytes = [0x4D,0x54,0x68,0x64,0,0,0,6,0,0,0,1,(PPQ >> 8) & 255, PPQ & 255,
+               0x4D,0x54,0x72,0x6B,
+               (track.length >>> 24) & 255, (track.length >>> 16) & 255, (track.length >>> 8) & 255, track.length & 255]
+               .concat(track);
+
+  download(new Blob([new Uint8Array(bytes)], { type: 'audio/midi' }), 'piano_' + stamp() + '.mid');
+}
+
+function encodeWav(buffer) {
+  var numCh = buffer.numberOfChannels, len = buffer.length;
+  var ab = new ArrayBuffer(44 + len * numCh * 2);
+  var dv = new DataView(ab);
+  var str = function (o, s) { for (var i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); dv.setUint32(4, 36 + len * numCh * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+  dv.setUint16(22, numCh, true); dv.setUint32(24, buffer.sampleRate, true);
+  dv.setUint32(28, buffer.sampleRate * numCh * 2, true); dv.setUint16(32, numCh * 2, true);
+  dv.setUint16(34, 16, true); str(36, 'data'); dv.setUint32(40, len * numCh * 2, true);
+
+  var chans = [];
+  for (var c = 0; c < numCh; c++) chans.push(buffer.getChannelData(c));
+  var off = 44;
+  for (var i = 0; i < len; i++) {
+    for (var c2 = 0; c2 < numCh; c2++) {
+      var v = Math.max(-1, Math.min(1, chans[c2][i]));
+      dv.setInt16(off, v < 0 ? v * 0x8000 : v * 0x7FFF, true);
+      off += 2;
+    }
+  }
+  return new Blob([ab], { type: 'audio/wav' });
+}
+
+async function renderOffline() {
+  var notes = state.notes.filter(function (n) { return n.tOff !== null; });
+  if (!notes.length) return null;
+
+  var rel = $('sustain').checked ? 1.4 : 0.12;
+  var endMs = Math.max.apply(null, notes.map(function (n) { return n.tOff; }));
+  var total = endMs / 1000 + rel + 1.5;
+
+  var offline = new OfflineAudioContext(2, Math.ceil(total * 44100), 44100);
+  var outs = buildGraph(offline, state.wet, state.vol);
+
+  notes.forEach(function (n) {
+    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000);
+    playTone(offline, outs, n.tOn / 1000 + 0.02, n.pitch, n.vel, dur, rel);
+  });
+
+  return await offline.startRendering();
+}
+
+async function exportWav() {
+  var btn = $('btnWav');
+  btn.disabled = true;
+  setPill('合成 WAV…');
+  try {
+    var buf = await renderOffline();
+    if (buf) download(encodeWav(buf), 'piano_' + stamp() + '.wav');
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('WAV 导出失败：' + e.message);
+  }
+  btn.disabled = false;
+}
+
+function floatTo16(input) {
+  var out = new Int16Array(input.length);
+  for (var i = 0; i < input.length; i++) {
+    var s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return out;
+}
+
+async function encodeMp3Blob(buf) {
+  var enc = new lamejs.Mp3Encoder(2, buf.sampleRate, 128);
+  var left = buf.getChannelData(0);
+  var right = buf.numberOfChannels > 1 ? buf.getChannelData(1) : left;
+  var block = 1152, chunks = [];
+  for (var i = 0; i < buf.length; i += block) {
+    var l = floatTo16(left.subarray(i, i + block));
+    var r = floatTo16(right.subarray(i, i + block));
+    var mp3buf = enc.encodeBuffer(l, r);
+    if (mp3buf.length) chunks.push(new Int8Array(mp3buf));
+  }
+  var end = enc.flush();
+  if (end.length) chunks.push(new Int8Array(end));
+  return new Blob(chunks, { type: 'audio/mpeg' });
+}
+
+async function exportMp3() {
+  var btn = $('btnMp3');
+  if (!window.lamejs) { alert('MP3 编码器没有加载成功，检查 lib/lame.min.js。'); return; }
+  btn.disabled = true;
+  setPill('编码 MP3…');
+  try {
+    var buf = await renderOffline();
+    if (!buf) return;
+    download(await encodeMp3Blob(buf), 'piano_' + stamp() + '.mp3');
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('MP3 导出失败：' + e.message);
+  }
+  btn.disabled = false;
+}
+
+/* ============================================================
+   音频剪辑（多片段时间轴）
+   ============================================================ */
+var WAVE_H = 260;
+var RULER_H = 26;
+
+var edit = {
+  srcBuf: null,
+  clips: [],
+  nextId: 1,
+  sel: null,
+  selClip: null,
+  playhead: 0,
+  viewStart: 0,
+  viewDur: 0,
+  playing: false,
+  loop: false,
+  sources: [],
+  endTimer: null,
+  playFrom: 0,
+  playTo: null,
+  playCtxStart: 0,
+  undo: [],
+  redo: [],
+  clip: null,
+  cache: null,
+  cacheKey: '',
+  pending: null,
+  peakCache: { buf: null, val: 0 },
+  pyramid: null,
+  declk: 0.008
+};
+
+var waveCanvas = null, wctx = null;
+var dragMode = null;
+var dragClip = null;
+var dragOrigin = null;
+var dragPushed = false;
+
+function clampNum(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function computePeaks(data, w) {
+  var out = new Float32Array(w * 2);
+  var n = data.length;
+  for (var x = 0; x < w; x++) {
+    var i0 = Math.floor(x / w * n);
+    var i1 = Math.max(i0 + 1, Math.floor((x + 1) / w * n));
+    var mn = 0, mx = 0;
+    for (var i = i0; i < i1 && i < n; i++) {
+      var v = data[i];
+      if (v < mn) mn = v;
+      else if (v > mx) mx = v;
+    }
+    out[x * 2] = mn;
+    out[x * 2 + 1] = mx;
+  }
+  return out;
+}
+
+/* ---------- 片段模型 ---------- */
+function sr() { return edit.srcBuf ? edit.srcBuf.sampleRate : 44100; }
+function clipDur(c) { return (c.b - c.a) / sr(); }
+function clipEnd(c) { return c.start + clipDur(c); }
+function nid() { return edit.nextId++; }
+
+function sortClips() {
+  edit.clips.sort(function (a, b) { return a.start - b.start; });
+}
+
+function timelineDur() {
+  var d = 0;
+  for (var i = 0; i < edit.clips.length; i++) {
+    var e = clipEnd(edit.clips[i]);
+    if (e > d) d = e;
+  }
+  return d;
+}
+
+function clipAtTime(t) {
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    if (t >= c.start && t < clipEnd(c)) return c;
+  }
+  return null;
+}
+
+function neighborBounds(clip) {
+  sortClips();
+  var idx = edit.clips.indexOf(clip);
+  var prevEnd = 0, nextStart = Infinity;
+  if (idx > 0) prevEnd = clipEnd(edit.clips[idx - 1]);
+  if (idx >= 0 && idx < edit.clips.length - 1) nextStart = edit.clips[idx + 1].start;
+  return [prevEnd, nextStart];
+}
+
+function cloneClips() {
+  return edit.clips.map(function (c) { return { id: c.id, a: c.a, b: c.b, start: c.start }; });
+}
+
+function scanPeak(lo, hi) {
+  if (!edit.srcBuf) return 0;
+  var d = edit.srcBuf.getChannelData(0);
+  var end = Math.min(hi, d.length);
+  var start = Math.max(0, lo);
+  if (end <= start) return 0;
+  var stride = Math.max(1, Math.floor((end - start) / 20000));
+  var p = 0;
+  for (var i = start; i < end; i += stride) {
+    var v = Math.abs(d[i]);
+    if (v > p) p = v;
+  }
+  return p;
+}
+
+function globalPeak() {
+  if (!edit.srcBuf) return 0;
+  if (edit.peakCache.buf === edit.srcBuf && edit.peakCache.len === edit.srcBuf.length) {
+    return edit.peakCache.val;
+  }
+  var p = scanPeak(0, edit.srcBuf.length);
+  edit.peakCache = { buf: edit.srcBuf, len: edit.srcBuf.length, val: p };
+  return p;
+}
+
+function buildPyramid() {
+  if (!edit.srcBuf) { edit.pyramid = null; return null; }
+  var p = edit.pyramid;
+  if (p && p.buf === edit.srcBuf && p.len === edit.srcBuf.length) return p;
+
+  var data = edit.srcBuf.getChannelData(0);
+  var step = 128;
+  var n = Math.ceil(data.length / step);
+  var mn = new Float32Array(n);
+  var mx = new Float32Array(n);
+
+  for (var i = 0; i < n; i++) {
+    var s = i * step;
+    var e = Math.min(s + step, data.length);
+    var a = 0, b = 0;
+    for (var j = s; j < e; j++) {
+      var v = data[j];
+      if (v < a) a = v;
+      else if (v > b) b = v;
+    }
+    mn[i] = a;
+    mx[i] = b;
+  }
+
+  edit.pyramid = { buf: edit.srcBuf, len: data.length, step: step, min: mn, max: mx };
+  return edit.pyramid;
+}
+
+function peakRange(sa, sb) {
+  var p = buildPyramid();
+  if (!p) return [0, 0];
+
+  var b0 = Math.floor(sa / p.step);
+  var b1 = Math.ceil(sb / p.step);
+  b1 = Math.min(b1, p.min.length);
+
+  if (b1 - b0 <= 2) {
+    var data = edit.srcBuf.getChannelData(0);
+    var a = 0, b = 0;
+    for (var i = Math.max(0, sa); i < Math.min(sb, data.length); i++) {
+      var v = data[i];
+      if (v < a) a = v;
+      else if (v > b) b = v;
+    }
+    return [a, b];
+  }
+
+  var lo = 0, hi = 0;
+  for (var k = Math.max(0, b0); k < b1; k++) {
+    if (p.min[k] < lo) lo = p.min[k];
+    if (p.max[k] > hi) hi = p.max[k];
+  }
+  return [lo, hi];
+}
+
+function scheduleClipAt(ac, dest, clip, when, offset, dur) {
+  var src = ac.createBufferSource();
+  src.buffer = edit.srcBuf;
+
+  var g = ac.createGain();
+  var fade = Math.max(0, Math.min(edit.declk || 0, dur * 0.4));
+
+  if (fade > 0.0005) {
+    g.gain.setValueAtTime(0, when);
+    g.gain.linearRampToValueAtTime(1, when + fade);
+    g.gain.setValueAtTime(1, when + dur - fade);
+    g.gain.linearRampToValueAtTime(0, when + dur);
+  } else {
+    g.gain.value = 1;
+  }
+
+  src.connect(g);
+  g.connect(dest);
+  src.start(when, clip.a / sr() + offset, dur);
+  return src;
+}
+
+/* ---------- 视图坐标 ---------- */
+function fmtTime(t) {
+  if (!isFinite(t)) return '—';
+  if (t < 60) return t.toFixed(2) + 's';
+  var m = Math.floor(t / 60);
+  var s = t - m * 60;
+  return m + ':' + (s < 10 ? '0' : '') + s.toFixed(2);
+}
+
+function timeToX(t) {
+  if (!edit.viewDur) return 0;
+  return (t - edit.viewStart) / edit.viewDur * waveCanvas.clientWidth;
+}
+
+function xToTime(x) {
+  var w = waveCanvas.clientWidth || 1;
+  return edit.viewStart + (x / w) * edit.viewDur;
+}
+
+function clampView() {
+  var dur = Math.max(timelineDur(), 0.5);
+  edit.viewDur = clampNum(edit.viewDur || dur, Math.min(0.05, dur), dur);
+  edit.viewStart = clampNum(edit.viewStart, 0, Math.max(0, dur - edit.viewDur));
+}
+
+function setCacheDirty() { edit.cacheKey = ''; }
+
+/* ---------- 状态 ---------- */
+function editControls() {
+  var has = !!edit.srcBuf;
+  var hasSel = !!(edit.sel && Math.abs(edit.sel[1] - edit.sel[0]) > 0.01);
+  var hasClip = !!edit.selClip;
+
+  ['btnCut', 'btnTrim', 'btnSilence', 'btnReverse', 'btnNorm', 'btnFadeIn', 'btnFadeOut',
+   'btnEditPlay', 'btnEditStop', 'btnEditWav', 'btnEditMp3', 'btnZoomIn', 'btnZoomOut',
+   'btnZoomFit', 'btnTrimSilence', 'btnSplit'].forEach(function (id) {
+    var el = $(id);
+    if (el) el.disabled = !has;
+  });
+  var bc = $('btnCopy'); if (bc) bc.disabled = !hasSel;
+  var bp = $('btnPaste'); if (bp) bp.disabled = !(has && edit.clip);
+  var bd = $('btnDelClip'); if (bd) bd.disabled = !hasClip;
+  var bu = $('btnUndo'); if (bu) bu.disabled = edit.undo.length === 0;
+  var br = $('btnRedo'); if (br) br.disabled = edit.redo.length === 0;
+}
+
+function updateStatus() {
+  var dur = timelineDur();
+  $('stDur').textContent = edit.srcBuf ? fmtTime(dur) : '—';
+  $('stPos').textContent = fmtTime(edit.playhead);
+  $('stZoom').textContent = edit.srcBuf ? (edit.viewDur >= dur - 0.001 ? '全宽' : fmtTime(edit.viewDur)) : '—';
+  if ($('stClips')) $('stClips').textContent = edit.srcBuf ? edit.clips.length + ' 段' : '—';
+
+  if (edit.sel && Math.abs(edit.sel[1] - edit.sel[0]) > 0.01) {
+    var a = Math.min(edit.sel[0], edit.sel[1]);
+    var b = Math.max(edit.sel[0], edit.sel[1]);
+    $('stSel').textContent = fmtTime(a) + ' – ' + fmtTime(b) + '（' + (b - a).toFixed(2) + 's）';
+  } else {
+    $('stSel').textContent = '未选择';
+  }
+
+  if (edit.srcBuf) {
+    var r = (edit.sel && Math.abs(edit.sel[1] - edit.sel[0]) > 0.01)
+      ? [Math.min(edit.sel[0], edit.sel[1]), Math.max(edit.sel[0], edit.sel[1])] : null;
+    var peak = 0;
+    if (r) {
+      forEachSrcRange(r[0], r[1], function (sa, sb) {
+        var p2 = scanPeak(sa, sb);
+        if (p2 > peak) peak = p2;
+      });
+    } else {
+      peak = globalPeak();
+    }
+    $('stPeak').textContent = peak > 0 ? (20 * Math.log10(peak)).toFixed(1) + ' dBFS' : '-∞';
+  } else {
+    $('stPeak').textContent = '—';
+  }
+  editControls();
+}
+
+/* ---------- 画布 ---------- */
+function fitWave() {
+  waveCanvas = $('wave');
+  wctx = waveCanvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  waveCanvas.width = Math.floor(waveCanvas.clientWidth * dpr);
+  waveCanvas.height = Math.floor(WAVE_H * dpr);
+  wctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  setCacheDirty();
+  drawWave();
+}
+
+function niceStep(range) {
+  var steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300];
+  for (var i = 0; i < steps.length; i++) if (range / steps[i] <= 10) return steps[i];
+  return 600;
+}
+
+function tickLabel(t, step) {
+  if (step < 1) return t.toFixed(2);
+  if (t >= 60) {
+    var m = Math.floor(t / 60);
+    var s = Math.round(t - m * 60);
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+  return Math.round(t) + 's';
+}
+
+function cacheKeyNow(w) {
+  var parts = [w, WAVE_H, edit.viewStart.toFixed(4), edit.viewDur.toFixed(4),
+               edit.srcBuf ? edit.srcBuf.length : 0];
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    parts.push(c.a + ':' + c.b + ':' + c.start.toFixed(4));
+  }
+  parts.push(edit.selClip ? edit.selClip.id : 0);
+  return parts.join('|');
+}
+
+function rebuildCache(w, h) {
+  var dpr = window.devicePixelRatio || 1;
+  var c = document.createElement('canvas');
+  c.width = Math.floor(w * dpr);
+  c.height = Math.floor(h * dpr);
+  var cc = c.getContext('2d');
+  cc.setTransform(dpr, 0, 0, dpr, 0, 0);
+  edit.cache = c;
+
+  var t0 = edit.viewStart, t1 = edit.viewStart + edit.viewDur;
+
+  cc.fillStyle = '#fcfcf9';
+  cc.fillRect(0, 0, w, RULER_H);
+
+  var step = niceStep(edit.viewDur);
+  cc.font = '10px ui-monospace, Consolas, monospace';
+  cc.textBaseline = 'middle';
+
+  for (var t = Math.floor(t0 / step) * step; t <= t1; t += step) {
+    var x = (t - t0) / edit.viewDur * w;
+    if (x < -40 || x > w + 40) continue;
+    cc.strokeStyle = '#eeede7';
+    cc.beginPath();
+    cc.moveTo(Math.round(x) + 0.5, RULER_H);
+    cc.lineTo(Math.round(x) + 0.5, h);
+    cc.stroke();
+    cc.fillStyle = '#a3a29a';
+    cc.fillText(tickLabel(t, step), x + 4, RULER_H / 2);
+  }
+
+  cc.strokeStyle = '#e6e5de';
+  cc.beginPath();
+  cc.moveTo(0, RULER_H - 0.5);
+  cc.lineTo(w, RULER_H - 0.5);
+  cc.stroke();
+
+  var data = edit.srcBuf.getChannelData(0);
+  var CLIP_TOP = RULER_H + 8;
+  var CLIP_H = h - RULER_H - 16;
+  var HDR = 15;
+
+  for (var i = 0; i < edit.clips.length; i++) {
+    var cl = edit.clips[i];
+    var x0 = (cl.start - t0) / edit.viewDur * w;
+    var x1 = (clipEnd(cl) - t0) / edit.viewDur * w;
+    if (x1 < -30 || x0 > w + 30) continue;
+
+    var cw = Math.max(2, x1 - x0);
+    var selected = edit.selClip && edit.selClip.id === cl.id;
+
+    cc.fillStyle = selected ? 'rgba(15,110,86,0.13)' : 'rgba(15,110,86,0.05)';
+    roundRect(cc, x0, CLIP_TOP, cw, CLIP_H, 5);
+    cc.fill();
+
+    cc.save();
+    cc.beginPath();
+    roundRect(cc, x0, CLIP_TOP, cw, CLIP_H, 5);
+    cc.clip();
+
+    cc.fillStyle = selected ? 'rgba(15,110,86,0.22)' : 'rgba(15,110,86,0.10)';
+    cc.fillRect(x0, CLIP_TOP, cw, HDR);
+
+    var mid = CLIP_TOP + HDR + (CLIP_H - HDR) / 2;
+    var half = (CLIP_H - HDR) / 2 - 6;
+
+    cc.strokeStyle = selected ? '#0b5a46' : '#2f8a70';
+    cc.lineWidth = 1;
+    cc.beginPath();
+
+    var pStart = Math.max(0, Math.floor(x0));
+    var pEnd = Math.min(w, Math.ceil(x1));
+    var span = cl.b - cl.a;
+
+    for (var px = pStart; px < pEnd; px++) {
+      var fa = (px - x0) / cw;
+      var fb = (px + 1 - x0) / cw;
+      var sa = cl.a + Math.floor(fa * span);
+      var sb = cl.a + Math.floor(fb * span);
+      sa = Math.max(cl.a, Math.min(cl.b - 1, sa));
+      sb = Math.max(sa + 1, Math.min(cl.b, sb));
+      var mm = peakRange(sa, sb);
+      cc.moveTo(px + 0.5, mid - mm[1] * half);
+      cc.lineTo(px + 0.5, mid - mm[0] * half);
+    }
+    cc.stroke();
+
+    if (cw > 44) {
+      cc.fillStyle = selected ? '#085041' : '#3d8a74';
+      cc.font = '10px ui-monospace, Consolas, monospace';
+      cc.fillText('音频 ' + clipDur(cl).toFixed(2) + 's', x0 + 7, CLIP_TOP + HDR / 2 + 1);
+    }
+
+    cc.restore();
+
+    cc.strokeStyle = selected ? '#0b5a46' : '#8fcbb6';
+    cc.lineWidth = selected ? 2 : 1;
+    roundRect(cc, x0 + 0.5, CLIP_TOP + 0.5, cw - 1, CLIP_H - 1, 5);
+    cc.stroke();
+
+    if (cw > 16) {
+      cc.fillStyle = selected ? '#0b5a46' : 'rgba(15,110,86,0.40)';
+      cc.fillRect(x0 + 1, CLIP_TOP + 5, 3, CLIP_H - 10);
+      cc.fillRect(x0 + cw - 4, CLIP_TOP + 5, 3, CLIP_H - 10);
+    }
+  }
+}
+
+function drawWave() {
+  if (!wctx) return;
+  var w = waveCanvas.clientWidth, h = WAVE_H;
+  wctx.clearRect(0, 0, w, h);
+
+  if (!edit.srcBuf) {
+    wctx.fillStyle = '#b6b5ad';
+    wctx.font = '13px system-ui, sans-serif';
+    wctx.fillText('导入音频或载入录音，然后在标尺上拖动框选', 14, h / 2);
+    drawOverview();
+    return;
+  }
+
+  if (!edit.viewDur) { edit.viewDur = Math.max(timelineDur(), 0.5); edit.viewStart = 0; }
+  clampView();
+
+  var key = cacheKeyNow(w);
+  if (key !== edit.cacheKey) {
+    rebuildCache(w, h);
+    edit.cacheKey = key;
+  }
+  wctx.drawImage(edit.cache, 0, 0, w, h);
+
+  if (edit.sel) {
+    var a = Math.min(edit.sel[0], edit.sel[1]);
+    var b = Math.max(edit.sel[0], edit.sel[1]);
+    var x0 = timeToX(a), x1 = timeToX(b);
+    if (x1 - x0 > 0.5) {
+      wctx.fillStyle = 'rgba(15,110,86,0.12)';
+      wctx.fillRect(x0, RULER_H, x1 - x0, h - RULER_H);
+      wctx.strokeStyle = '#0f6e56';
+      wctx.lineWidth = 2;
+      wctx.beginPath();
+      wctx.moveTo(x0, RULER_H); wctx.lineTo(x0, h);
+      wctx.moveTo(x1, RULER_H); wctx.lineTo(x1, h);
+      wctx.stroke();
+      wctx.fillStyle = '#0f6e56';
+      roundRect(wctx, x0 - 3, RULER_H, 6, 15, 2); wctx.fill();
+      roundRect(wctx, x1 - 3, RULER_H, 6, 15, 2); wctx.fill();
+      roundRect(wctx, x0 - 3, h - 15, 6, 15, 2); wctx.fill();
+      roundRect(wctx, x1 - 3, h - 15, 6, 15, 2); wctx.fill();
+
+      var lab = (b - a).toFixed(2) + 's';
+      wctx.font = '11px ui-monospace, Consolas, monospace';
+      var tw = wctx.measureText(lab).width + 16;
+      var cx = clampNum((x0 + x1) / 2 - tw / 2, 2, Math.max(2, w - tw - 2));
+      wctx.fillStyle = 'rgba(15,110,86,0.94)';
+      roundRect(wctx, cx, RULER_H + 8, tw, 18, 4); wctx.fill();
+      wctx.fillStyle = '#fff';
+      wctx.textAlign = 'center';
+      wctx.fillText(lab, cx + tw / 2, RULER_H + 21);
+      wctx.textAlign = 'left';
+    }
+  }
+
+  var pxp = timeToX(edit.playhead);
+  if (pxp >= -60 && pxp <= w + 60) {
+    wctx.strokeStyle = '#d1463f';
+    wctx.lineWidth = 1.5;
+    wctx.beginPath();
+    wctx.moveTo(pxp, RULER_H - 2);
+    wctx.lineTo(pxp, h);
+    wctx.stroke();
+
+    var hw = 46, hh = 17;
+    var hx = clampNum(pxp - hw / 2, 0, Math.max(0, w - hw));
+    wctx.fillStyle = '#d1463f';
+    roundRect(wctx, hx, 2, hw, hh, 3); wctx.fill();
+    wctx.fillStyle = '#fff';
+    wctx.font = '10px ui-monospace, Consolas, monospace';
+    wctx.textAlign = 'center';
+    wctx.fillText(edit.playhead.toFixed(2) + 's', hx + hw / 2, 13);
+    wctx.textAlign = 'left';
+  }
+
+  drawOverview();
+}
+
+/* ---------- 概览条 ---------- */
+var ovCanvas = null, ovctx = null, ovPeaks = null, ovKey = '', ovDrag = false;
+
+function fitOverview() {
+  ovCanvas = $('overview');
+  ovctx = ovCanvas.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  ovCanvas.width = Math.floor(ovCanvas.clientWidth * dpr);
+  ovCanvas.height = Math.floor(42 * dpr);
+  ovctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ovPeaks = null;
+  drawOverview();
+}
+
+function drawOverview() {
+  if (!ovctx) return;
+  var w = ovCanvas.clientWidth, h = 42;
+  ovctx.clearRect(0, 0, w, h);
+
+  if (!edit.srcBuf) {
+    ovctx.fillStyle = '#d9d8d1';
+    ovctx.fillRect(0, h / 2 - 0.5, w, 1);
+    return;
+  }
+
+  var key = w + '|' + edit.srcBuf.length;
+  if (key !== ovKey || !ovPeaks) {
+    ovPeaks = computePeaks(edit.srcBuf.getChannelData(0), Math.floor(w));
+    ovKey = key;
+  }
+
+  var mid = h / 2, half = h / 2 - 5;
+  ovctx.strokeStyle = '#cbcac2';
+  ovctx.lineWidth = 1;
+  ovctx.beginPath();
+  for (var x = 0; x < ovPeaks.length / 2; x++) {
+    ovctx.moveTo(x + 0.5, mid - ovPeaks[x * 2 + 1] * half);
+    ovctx.lineTo(x + 0.5, mid - ovPeaks[x * 2] * half);
+  }
+  ovctx.stroke();
+
+  var dur = Math.max(timelineDur(), 0.001);
+  var vx = 0, vw = w;
+  if (edit.viewDur < dur - 0.001) {
+    vx = edit.viewStart / dur * w;
+    vw = Math.max(8, edit.viewDur / dur * w);
+  }
+  ovctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ovctx.fillRect(vx, 0, vw, h);
+  ovctx.strokeStyle = '#0f6e56';
+  ovctx.lineWidth = 1.5;
+  ovctx.strokeRect(vx + 0.75, 1, vw - 1.5, h - 2);
+
+  var px = clampNum(edit.playhead / dur, 0, 1) * w;
+  ovctx.strokeStyle = '#d1463f';
+  ovctx.lineWidth = 1.5;
+  ovctx.beginPath();
+  ovctx.moveTo(px, 0);
+  ovctx.lineTo(px, h);
+  ovctx.stroke();
+}
+
+function ovSeek(clientX) {
+  if (!edit.srcBuf) return;
+  var r = ovCanvas.getBoundingClientRect();
+  var dur = Math.max(timelineDur(), 0.001);
+  var ratio = clampNum((clientX - r.left) / r.width, 0, 1);
+  edit.viewStart = clampNum(ratio * dur - edit.viewDur / 2, 0, Math.max(0, dur - edit.viewDur));
+  setCacheDirty();
+  updateStatus();
+  drawWave();
+}
+
+/* ---------- 撤销 ---------- */
+function beginOp() {
+  edit.pending = { clipsBefore: cloneClips(), clipsAfter: null, ranges: [] };
+}
+
+function commitOp() {
+  if (!edit.pending) return;
+  edit.pending.clipsAfter = cloneClips();
+  edit.undo.push(edit.pending);
+  if (edit.undo.length > 30) edit.undo.shift();
+  edit.redo.length = 0;
+  edit.pending = null;
+  scheduleSave();
+}
+
+function abortOp() {
+  edit.pending = null;
+}
+
+function applyPatches(entry, which) {
+  if (!entry.ranges || !entry.ranges.length) return;
+  for (var i = 0; i < entry.ranges.length; i++) {
+    var r = entry.ranges[i];
+    var ch = edit.srcBuf.getChannelData(r.ch);
+    ch.set(r[which], r.start);
+  }
+  edit.peakCache = { buf: null, val: 0 };
+  edit.pyramid = null;
+  ovPeaks = null;
+}
+
+function setClips(list) {
+  edit.clips = list.map(function (c) { return { id: c.id, a: c.a, b: c.b, start: c.start }; });
+}
+
+function undoEdit() {
+  if (!edit.undo.length) return;
+  var e = edit.undo.pop();
+  applyPatches(e, 'before');
+  setClips(e.clipsBefore);
+  edit.redo.push(e);
+  edit.sel = null;
+  edit.selClip = null;
+  afterChange();
+}
+
+function redoEdit() {
+  if (!edit.redo.length) return;
+  var e = edit.redo.pop();
+  applyPatches(e, 'after');
+  setClips(e.clipsAfter || e.clipsBefore);
+  edit.undo.push(e);
+  edit.sel = null;
+  edit.selClip = null;
+  afterChange();
+}
+
+function afterChange() {
+  sortClips();
+  if (edit.selClip && edit.clips.indexOf(edit.selClip) === -1) edit.selClip = null;
+  setCacheDirty();
+  var dur = timelineDur();
+  if (edit.viewDur > dur) edit.viewDur = Math.max(dur, 0.5);
+  edit.playhead = clampNum(edit.playhead, 0, Math.max(0, dur));
+  updateStatus();
+  drawWave();
+}
+
+/* ---------- 载入 ---------- */
+function loadBuffer(buf) {
+  edit.srcBuf = buf;
+  edit.clips = [{ id: nid(), a: 0, b: buf.length, start: 0 }];
+  edit.sel = null;
+  edit.selClip = null;
+  edit.undo = [];
+  edit.redo = [];
+  edit.playhead = 0;
+  edit.viewStart = 0;
+  edit.viewDur = Math.max(buf.duration, 0.5);
+  edit.cacheKey = '';
+  ovPeaks = null;
+  updateStatus();
+  drawWave();
+  scheduleSave();
+}
+
+/* ---------- 编辑 ---------- */
+function selectionRange() {
+  if (!edit.sel) return null;
+  var a = Math.min(edit.sel[0], edit.sel[1]);
+  var b = Math.max(edit.sel[0], edit.sel[1]);
+  if (b - a < 0.005) return null;
+  return [a, b];
+}
+
+function splitRaw(t) {
+  var c = clipAtTime(t);
+  if (!c) return false;
+  var off = Math.round((t - c.start) * sr());
+  if (off <= 20 || off >= (c.b - c.a) - 20) return false;
+  var right = { id: nid(), a: c.a + off, b: c.b, start: t };
+  c.b = c.a + off;
+  edit.clips.push(right);
+  sortClips();
+  return true;
+}
+
+function splitAtPlayhead() {
+  if (!edit.srcBuf) return;
+  beginOp();
+  if (!splitRaw(edit.playhead)) {
+    abortOp();
+    setPill('这里切不开：播放头要在片段内部，且离两端都留有空间');
+    setTimeout(function () { setPill(state.deviceName || '已连接', 'on'); }, 2200);
+    return;
+  }
+  commitOp();
+  afterChange();
+}
+
+function deleteRange(a, b) {
+  if (!edit.srcBuf || b <= a) return false;
+  var len = b - a;
+  var rate = sr();
+  var out = [];
+
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    var s = c.start, e = clipEnd(c);
+
+    if (e <= a + 1e-9) { out.push(c); continue; }
+    if (s >= b - 1e-9) { c.start = s - len; out.push(c); continue; }
+
+    var leftLen = Math.max(0, a - s);
+    var rightLen = Math.max(0, e - b);
+
+    if (leftLen > 2 / rate) {
+      out.push({ id: nid(), a: c.a, b: c.a + Math.round(leftLen * rate), start: s });
+    }
+    if (rightLen > 2 / rate) {
+      out.push({ id: nid(), a: c.b - Math.round(rightLen * rate), b: c.b, start: a });
+    }
+  }
+
+  edit.clips = out;
+  sortClips();
+  return true;
+}
+
+function cutSelection() {
+  var r = selectionRange();
+  if (!r) return;
+  beginOp();
+  deleteRange(r[0], r[1]);
+  commitOp();
+  edit.sel = null;
+  edit.selClip = null;
+  edit.playhead = Math.min(edit.playhead, r[0]);
+  afterChange();
+}
+
+function deleteSelectedClip() {
+  if (!edit.selClip) return;
+  var c = edit.selClip;
+  beginOp();
+  deleteRange(c.start, clipEnd(c));
+  commitOp();
+  edit.selClip = null;
+  edit.sel = null;
+  afterChange();
+}
+
+function trimToSelection() {
+  var r = selectionRange();
+  if (!r) return;
+  beginOp();
+  var rate = sr();
+  var kept = [];
+
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    var s = c.start, e = clipEnd(c);
+    if (e <= r[0] || s >= r[1]) continue;
+    var ns = Math.max(s, r[0]);
+    var ne = Math.min(e, r[1]);
+    var na = c.a + Math.round((ns - s) * rate);
+    var nb = na + Math.round((ne - ns) * rate);
+    if (nb - na < 20) continue;
+    kept.push({ id: nid(), a: na, b: nb, start: ns - r[0] });
+  }
+
+  edit.clips = kept;
+  edit.sel = null;
+  edit.selClip = null;
+  edit.playhead = 0;
+  edit.viewStart = 0;
+  edit.viewDur = Math.max(timelineDur(), 0.5);
+  commitOp();
+  afterChange();
+}
+
+function forEachSrcRange(a, b, fn) {
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    var s = c.start, e = clipEnd(c);
+    var os = Math.max(s, a), oe = Math.min(e, b);
+    if (oe <= os) continue;
+    var sa = c.a + Math.round((os - s) * sr());
+    var sb = c.a + Math.round((oe - s) * sr());
+    if (sb > sa) fn(sa, sb);
+  }
+}
+
+function effectOnSelection(fn) {
+  var r = selectionRange();
+  if (!r) return;
+
+  var ranges = [];
+  forEachSrcRange(r[0], r[1], function (sa, sb) { ranges.push([sa, sb]); });
+  if (!ranges.length) return;
+
+  beginOp();
+  var entry = edit.pending;
+  var chans = edit.srcBuf.numberOfChannels;
+
+  for (var i = 0; i < ranges.length; i++) {
+    for (var c = 0; c < chans; c++) {
+      var d = edit.srcBuf.getChannelData(c);
+      entry.ranges.push({
+        ch: c,
+        start: ranges[i][0],
+        before: d.slice(ranges[i][0], ranges[i][1]),
+        after: null
+      });
+    }
+  }
+
+  for (var k = 0; k < ranges.length; k++) fn(ranges[k][0], ranges[k][1]);
+
+  for (var m = 0; m < entry.ranges.length; m++) {
+    var rr = entry.ranges[m];
+    rr.after = edit.srcBuf.getChannelData(rr.ch).slice(rr.start, rr.start + rr.before.length);
+  }
+
+  commitOp();
+  edit.peakCache = { buf: null, val: 0 };
+  edit.pyramid = null;
+  ovPeaks = null;
+  ovKey = '';
+  setCacheDirty();
+  ovPeaks = null;
+  updateStatus();
+  drawWave();
+}
+
+function silenceSelection() {
+  effectOnSelection(function (sa, sb) {
+    for (var c = 0; c < edit.srcBuf.numberOfChannels; c++) {
+      edit.srcBuf.getChannelData(c).fill(0, sa, sb);
+    }
+  });
+}
+
+function reverseSelection() {
+  effectOnSelection(function (sa, sb) {
+    for (var c = 0; c < edit.srcBuf.numberOfChannels; c++) {
+      var d = edit.srcBuf.getChannelData(c);
+      var seg = d.slice(sa, sb);
+      seg.reverse();
+      d.set(seg, sa);
+    }
+  });
+}
+
+function normalizeSelection() {
+  var r = selectionRange();
+  if (!r) return;
+  var peak = 0;
+  forEachSrcRange(r[0], r[1], function (sa, sb) {
+    for (var c = 0; c < edit.srcBuf.numberOfChannels; c++) {
+      var d = edit.srcBuf.getChannelData(c);
+      for (var i = sa; i < sb; i++) {
+        var v = Math.abs(d[i]);
+        if (v > peak) peak = v;
+      }
+    }
+  });
+  if (peak < 0.0005) return;
+  var g = 0.97 / peak;
+  effectOnSelection(function (sa, sb) {
+    for (var c = 0; c < edit.srcBuf.numberOfChannels; c++) {
+      var d = edit.srcBuf.getChannelData(c);
+      for (var i = sa; i < sb; i++) d[i] *= g;
+    }
+  });
+}
+
+function fadeSelection(kind) {
+  var r = selectionRange();
+  if (!r) return;
+  effectOnSelection(function (sa, sb) {
+    var span = sb - sa;
+    if (span < 4) return;
+    for (var c = 0; c < edit.srcBuf.numberOfChannels; c++) {
+      var d = edit.srcBuf.getChannelData(c);
+      for (var i = 0; i < span; i++) {
+        var k = i / span;
+        d[sa + i] *= kind === 'in' ? k : (1 - k);
+      }
+    }
+  });
+}
+
+function trimSilence() {
+  if (!edit.srcBuf) return;
+  var th = 0.002;
+  var rate = sr();
+  var d = edit.srcBuf.getChannelData(0);
+  var startSec = null, endSec = null;
+
+  // 逐个片段找首/末个有声采样。必须每段都比对一遍：
+  // 只取第一段会把 endSec 落在第一段末尾，后面的片段会被整段删掉。
+  for (var ci = 0; ci < edit.clips.length; ci++) {
+    var c = edit.clips[ci];
+    var from = Math.max(0, c.a);
+    var to = Math.min(c.b, d.length);
+    if (to <= from) continue;
+
+    var first = -1, last = -1;
+    for (var p = from; p < to; p++) {
+      if (Math.abs(d[p]) > th) { first = p; break; }
+    }
+    if (first < 0) continue;
+    for (var q = to - 1; q >= from; q--) {
+      if (Math.abs(d[q]) > th) { last = q; break; }
+    }
+
+    var s0 = c.start + (first - c.a) / rate;
+    var s1 = c.start + (last - c.a) / rate + 0.02;
+    if (startSec === null || s0 < startSec) startSec = s0;
+    if (endSec === null || s1 > endSec) endSec = s1;
+  }
+
+  if (startSec === null || endSec === null) { alert('整段几乎都是静音。'); return; }
+
+  beginOp();
+  deleteRange(endSec, timelineDur() + 1);
+  deleteRange(0, startSec);
+  commitOp();
+  edit.sel = null;
+  edit.selClip = null;
+  edit.playhead = 0;
+  afterChange();
+}
+
+function copySelection() {
+  var r = selectionRange();
+  if (!r) return;
+  var ranges = [], total = 0;
+  forEachSrcRange(r[0], r[1], function (sa, sb) {
+    ranges.push({ a: sa, b: sb });
+    total += (sb - sa) / sr();
+  });
+  if (!ranges.length) return;
+  edit.clip = { ranges: ranges, total: total };
+  updateStatus();
+}
+
+function pasteAtPlayhead() {
+  if (!edit.clip || !edit.srcBuf) return;
+  var t = edit.playhead;
+  var rate = sr();
+  var chans = edit.srcBuf.numberOfChannels;
+
+  var totalSamples = 0;
+  edit.clip.ranges.forEach(function (rg) { totalSamples += (rg.b - rg.a); });
+  if (!totalSamples) return;
+
+  beginOp();
+
+  var oldBuf = edit.srcBuf;
+  var oldLen = oldBuf.length;
+  var newBuf = actx.createBuffer(chans, oldLen + totalSamples, oldBuf.sampleRate);
+
+  for (var c = 0; c < chans; c++) {
+    var dst = newBuf.getChannelData(c);
+    dst.set(oldBuf.getChannelData(c), 0);
+  }
+
+  var writeAt = oldLen;
+  var newRanges = [];
+  edit.clip.ranges.forEach(function (rg) {
+    var len = rg.b - rg.a;
+    for (var c2 = 0; c2 < chans; c2++) {
+      newBuf.getChannelData(c2).set(oldBuf.getChannelData(c2).subarray(rg.a, rg.b), writeAt);
+    }
+    newRanges.push({ a: writeAt, b: writeAt + len });
+    writeAt += len;
+  });
+
+  edit.srcBuf = newBuf;
+  edit.peakCache = { buf: null, val: 0 };
+  ovPeaks = null;
+
+  splitRaw(t);
+
+  for (var i = 0; i < edit.clips.length; i++) {
+    var cl = edit.clips[i];
+    if (cl.start >= t - 1e-9) cl.start += edit.clip.total;
+  }
+
+  var pos = t;
+  newRanges.forEach(function (rg2) {
+    edit.clips.push({ id: nid(), a: rg2.a, b: rg2.b, start: pos });
+    pos += (rg2.b - rg2.a) / rate;
+  });
+
+  edit.playhead = pos;
+  commitOp();
+  afterChange();
+}
+
+/* ---------- 播放 ---------- */
+function animateWave() {
+  if (!edit.playing) return;
+  if (edit.srcBuf && edit.viewDur < timelineDur() - 0.001 && actx) {
+    var t = edit.playFrom + (actx.currentTime - edit.playCtxStart);
+    if (t > edit.viewStart + edit.viewDur * 0.92 || t < edit.viewStart) {
+      edit.viewStart = clampNum(t - edit.viewDur * 0.25, 0, Math.max(0, timelineDur() - edit.viewDur));
+      setCacheDirty();
+    }
+  }
+  drawWave();
+  requestAnimationFrame(animateWave);
+}
+
+function editPlay() {
+  if (!edit.srcBuf || !edit.clips.length) return;
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+  stopEditPlay();
+
+  var r = selectionRange();
+  var from = r ? r[0] : edit.playhead;
+  var to = r ? r[1] : timelineDur();
+  if (from >= to - 0.01) from = 0;
+
+  var base = actx.currentTime + 0.06;
+  var rate = sr();
+  var scheduled = 0;
+  edit.sources = [];
+
+  edit.clips.forEach(function (c) {
+    var s = c.start, e = clipEnd(c);
+    if (e <= from || s >= to) return;
+    var startAt = Math.max(s, from);
+    var endAt = Math.min(e, to);
+    var off = startAt - s;
+    var dur = endAt - startAt;
+    if (dur <= 0.01) return;
+
+    var src = scheduleClipAt(actx, actx.destination, c, base + (startAt - from), off, dur);
+    edit.sources.push(src);
+    scheduled++;
+  });
+
+  if (!scheduled) return;
+
+  edit.playing = true;
+  edit.playFrom = from;
+  edit.playTo = to;
+  edit.playCtxStart = base;
+  animateWave();
+
+  edit.endTimer = setTimeout(function () {
+    if (!edit.playing) return;
+    if (edit.loop) { edit.playing = false; editPlay(); return; }
+    edit.playing = false;
+    edit.playhead = to;
+    updateStatus();
+    drawWave();
+  }, (to - from) * 1000 + 150);
+}
+
+function stopEditPlay() {
+  if (edit.endTimer) { clearTimeout(edit.endTimer); edit.endTimer = null; }
+  (edit.sources || []).forEach(function (s) { try { s.stop(0); } catch (e) {} });
+  edit.sources = [];
+  if (actx && edit.playing) {
+    var t = edit.playFrom + (actx.currentTime - edit.playCtxStart);
+    edit.playhead = clampNum(t, 0, timelineDur());
+  }
+  edit.playing = false;
+  updateStatus();
+  drawWave();
+}
+
+async function renderTimeline() {
+  if (!edit.srcBuf || !edit.clips.length) return null;
+  var dur = timelineDur();
+  var ac = new OfflineAudioContext(2, Math.max(1, Math.ceil((dur + 0.3) * 44100)), 44100);
+  var rate = sr();
+  edit.clips.forEach(function (c) {
+    scheduleClipAt(ac, ac.destination, c, c.start, 0, clipDur(c));
+  });
+  return await ac.startRendering();
+}
+
+function exportEditWav() {
+  renderTimeline().then(function (buf) {
+    if (buf) download(encodeWav(buf), 'edit_' + stamp() + '.wav');
+  });
+}
+
+async function exportEditMp3() {
+  if (!window.lamejs) { alert('MP3 编码器没有加载成功。'); return; }
+  $('btnEditMp3').disabled = true;
+  setPill('编码 MP3…');
+  try {
+    var buf = await renderTimeline();
+    if (buf) download(await encodeMp3Blob(buf), 'edit_' + stamp() + '.mp3');
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('MP3 导出失败：' + e.message);
+  }
+  $('btnEditMp3').disabled = false;
+}
+
+/* ---------- 导入 ---------- */
+async function loadTakeForEdit() {
+  var notes = state.notes.filter(function (n) { return n.tOff !== null; });
+  if (!notes.length) { alert('还没有录音。先录一段，或点「导入音频」。'); return; }
+  initLive();
+  setPill('合成音频…');
+  try {
+    var buf = await renderOffline();
+    if (!buf) return;
+    loadBuffer(buf);
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('合成失败：' + e.message);
+  }
+}
+
+async function importAudioFile(file) {
+  initLive();
+  setPill('读取音频…');
+  try {
+    var ab = await file.arrayBuffer();
+    var buf = await actx.decodeAudioData(ab);
+    if (buf.numberOfChannels === 1) {
+      var mono = buf.getChannelData(0);
+      var stereo = actx.createBuffer(2, buf.length, buf.sampleRate);
+      stereo.copyToChannel(mono, 0);
+      stereo.copyToChannel(mono, 1);
+      buf = stereo;
+    }
+    loadBuffer(buf);
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('这个文件读不了：' + e.message);
+    setPill(state.deviceName || '已连接', 'on');
+  }
+}
+
+/* ---------- 缩放 ---------- */
+function zoomBy(factor, anchorSec) {
+  if (!edit.srcBuf) return;
+  var dur = Math.max(timelineDur(), 0.5);
+  var newDur = clampNum(edit.viewDur * factor, Math.min(0.05, dur), dur);
+  var frac = clampNum((anchorSec - edit.viewStart) / edit.viewDur, 0, 1);
+  edit.viewStart = anchorSec - frac * newDur;
+  edit.viewDur = newDur;
+  clampView();
+  setCacheDirty();
+  updateStatus();
+  drawWave();
+}
+
+function zoomFit() {
+  if (!edit.srcBuf) return;
+  edit.viewStart = 0;
+  edit.viewDur = Math.max(timelineDur(), 0.5);
+  setCacheDirty();
+  updateStatus();
+  drawWave();
+}
+
+function snapTime(t, e) {
+  if (e && e.altKey) return clampNum(t, 0, Math.max(timelineDur(), 0));
+  var grid = 0.05;
+  var s = Math.round(t / grid) * grid;
+  if (Math.abs(s - t) < grid * 0.55) t = s;
+  if (Math.abs(t) < grid) t = 0;
+  return clampNum(t, 0, Math.max(timelineDur(), 0));
+}
+
+/* ---------- 交互 ---------- */
+function localX(e) {
+  return e.clientX - waveCanvas.getBoundingClientRect().left;
+}
+
+function hitClip(x) {
+  if (!edit.srcBuf) return null;
+  var t = xToTime(x);
+  for (var i = 0; i < edit.clips.length; i++) {
+    var c = edit.clips[i];
+    var e = clipEnd(c);
+    if (t >= c.start - 1e-9 && t <= e + 1e-9) {
+      var x0 = timeToX(c.start), x1 = timeToX(e);
+      if (Math.abs(x - x0) < 7) return { clip: c, zone: 'left' };
+      if (Math.abs(x - x1) < 7) return { clip: c, zone: 'right' };
+      return { clip: c, zone: 'body' };
+    }
+  }
+  return null;
+}
+
+function onWaveDown(e) {
+  if (!edit.srcBuf) return;
+  waveCanvas.focus();
+  var x = localX(e);
+  var y = e.clientY - waveCanvas.getBoundingClientRect().top;
+
+  if (y < RULER_H || e.shiftKey) {
+    var t0 = snapTime(clampNum(xToTime(x), 0, Math.max(timelineDur(), 0)), e);
+    dragMode = 'new';
+    edit.sel = [t0, t0];
+    edit.selClip = null;
+    drawWave();
+    return;
+  }
+
+  var hit = hitClip(x);
+  if (!hit) {
+    edit.selClip = null;
+    edit.playhead = snapTime(clampNum(xToTime(x), 0, Math.max(timelineDur(), 0)), e);
+    dragMode = 'seek';
+    updateStatus();
+    drawWave();
+    return;
+  }
+
+  edit.selClip = hit.clip;
+  beginOp();
+  dragPushed = true;
+  dragClip = hit.clip;
+  dragOrigin = { x: x, start: hit.clip.start, a: hit.clip.a, b: hit.clip.b };
+  dragMode = hit.zone === 'body' ? 'move' : (hit.zone === 'left' ? 'trimLeft' : 'trimRight');
+  updateStatus();
+  drawWave();
+}
+
+function onWaveMove(e) {
+  if (!dragMode || !edit.srcBuf) return;
+  var x = localX(e);
+  var w = waveCanvas.clientWidth || 1;
+  var dt = (x - dragOrigin.x) / w * edit.viewDur;
+
+  if (dragMode === 'new') {
+    edit.sel[1] = snapTime(clampNum(xToTime(x), 0, Math.max(timelineDur(), 0)), e);
+  } else if (dragMode === 'seek') {
+    edit.playhead = snapTime(clampNum(xToTime(x), 0, Math.max(timelineDur(), 0)), e);
+  } else if (dragClip) {
+    var rate = sr();
+    var b = neighborBounds(dragClip);
+
+    if (dragMode === 'move') {
+      var dur = (dragOrigin.b - dragOrigin.a) / rate;
+      var raw = dragOrigin.start + dt;
+      var ns = clampNum(raw, b[0], Math.max(b[0], b[1] - dur));
+      dragClip.start = snapTime(ns, e);
+      if (dragClip.start < b[0]) dragClip.start = b[0];
+      if (dragClip.start + dur > b[1]) dragClip.start = Math.max(b[0], b[1] - dur);
+    } else if (dragMode === 'trimLeft') {
+      var d0 = (dragOrigin.b - dragOrigin.a) / rate;
+      var maxStart = dragOrigin.start + d0 - 0.05;
+      var nStart = clampNum(dragOrigin.start + dt, b[0], maxStart);
+      var delta = Math.round((nStart - dragOrigin.start) * rate);
+      var na = clampNum(dragOrigin.a + delta, 0, dragOrigin.b - 20);
+      dragClip.a = na;
+      dragClip.start = dragOrigin.start + (na - dragOrigin.a) / rate;
+    } else if (dragMode === 'trimRight') {
+      var end0 = dragOrigin.start + (dragOrigin.b - dragOrigin.a) / rate;
+      var maxEnd = Math.min(b[1], dragOrigin.start + (edit.srcBuf.length - dragOrigin.a) / rate);
+      var nEnd = clampNum(end0 + dt, dragOrigin.start + 0.05, maxEnd);
+      var nb = dragOrigin.a + Math.round((nEnd - dragOrigin.start) * rate);
+      dragClip.b = Math.min(nb, edit.srcBuf.length);
+      if (dragClip.b < dragClip.a + 20) dragClip.b = dragClip.a + 20;
+    }
+    setCacheDirty();
+  }
+
+  updateStatus();
+  drawWave();
+}
+
+function onWaveUp() {
+  if (!dragMode) return;
+
+  if (dragMode === 'new' && edit.sel && Math.abs(edit.sel[1] - edit.sel[0]) < 0.015) {
+    edit.playhead = edit.sel[0];
+    edit.sel = null;
+  }
+
+  if (dragPushed) {
+    var changed = dragClip && dragOrigin &&
+      (dragClip.start !== dragOrigin.start || dragClip.a !== dragOrigin.a || dragClip.b !== dragOrigin.b);
+    if (changed) commitOp(); else abortOp();
+    dragPushed = false;
+  }
+
+  dragMode = null;
+  dragClip = null;
+  dragOrigin = null;
+  sortClips();
+  setCacheDirty();
+  updateStatus();
+  drawWave();
+}
+
+/* ---------- 自检 ---------- */
+function runSelfTest() {
+  var out = [];
+  function ok(name, cond, extra) {
+    out.push((cond ? 'PASS|' : 'FAIL|') + name + (extra ? '|' + extra : ''));
+  }
+
+  var ac = new OfflineAudioContext(2, 44100 * 2, 44100);
+  var buf = ac.createBuffer(2, 44100 * 2, 44100);
+  for (var c = 0; c < 2; c++) {
+    var d = buf.getChannelData(c);
+    for (var i = 0; i < d.length; i++) d[i] = Math.sin(i / 20) * 0.5;
+  }
+
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+
+  loadBuffer(buf);
+  ok('载入后 1 段', edit.clips.length === 1, '段数 ' + edit.clips.length);
+  ok('总时长 2.00s', Math.abs(timelineDur() - 2) < 0.01, timelineDur().toFixed(3));
+
+  edit.playhead = 1.0;
+  splitAtPlayhead();
+  ok('在 1.0s 分割成 2 段', edit.clips.length === 2, '段数 ' + edit.clips.length);
+  ok('分割点位置正确', edit.clips.length === 2 && Math.abs(edit.clips[1].start - 1) < 0.002,
+     edit.clips.length === 2 ? edit.clips[1].start.toFixed(3) : '-');
+
+  var beforeDur = timelineDur();
+
+  edit.sel = [0.4, 0.6];
+  cutSelection();
+  ok('删除 0.2s 后时长 1.80s', Math.abs(timelineDur() - 1.8) < 0.02, timelineDur().toFixed(3));
+  ok('删除中段产生 3 段（左右不连续）', edit.clips.length === 3, '段数 ' + edit.clips.length);
+  ok('后半段左移贴合', Math.abs(edit.clips[1].start - 0.4) < 0.02, edit.clips[1].start.toFixed(3));
+
+  undoEdit();
+  ok('撤销恢复 2.00s', Math.abs(timelineDur() - 2) < 0.02, timelineDur().toFixed(3));
+
+  redoEdit();
+  ok('重做回到 1.80s', Math.abs(timelineDur() - 1.8) < 0.02, timelineDur().toFixed(3));
+
+  var clip = edit.clips[0];
+  var bnd = neighborBounds(clip);
+  var wantStart = -0.5;
+  var clamped = Math.max(bnd[0], Math.min(wantStart, bnd[1] - clipDur(clip)));
+  clip.start = clamped;
+  sortClips();
+  ok('向左拖越界被钳制', clamped >= bnd[0] - 0.001, 'start=' + clamped.toFixed(3));
+  ok('移动后与后继不重叠', edit.clips[1].start >= clipEnd(clip) - 0.001,
+     'gap=' + (edit.clips[1].start - clipEnd(clip)).toFixed(3));
+
+  edit.sel = [0, timelineDur()];
+  copySelection();
+  ok('复制生成剪贴板', !!edit.clip && edit.clip.ranges.length > 0);
+
+  edit.playhead = 0;
+  pasteAtPlayhead();
+  ok('粘贴后段数增加', edit.clips.length >= 3, '段数 ' + edit.clips.length);
+
+  edit.sel = [0, timelineDur()];
+  cutSelection();
+  ok('全选删除后无片段', edit.clips.length === 0, '段数 ' + edit.clips.length);
+  ok('全选删除后时长为 0', timelineDur() === 0, timelineDur().toFixed(3));
+
+  undoEdit();
+  ok('撤销恢复全部片段', edit.clips.length > 0, '段数 ' + edit.clips.length);
+  ok('撤销后时长恢复', timelineDur() > 0.05, timelineDur().toFixed(3));
+
+  ok('识别 mp3（无 MIME）', !!pickAudio([{ name: 'a.mp3', type: '' }]));
+  ok('识别 wav（有 MIME）', !!pickAudio([{ name: 'a.wav', type: 'audio/wav' }]));
+  ok('识别 flac', !!pickAudio([{ name: 'a.flac', type: '' }]));
+  ok('拒绝非音频', pickAudio([{ name: 'a.txt', type: 'text/plain' }]) === null);
+  ok('多文件取第一个音频', pickAudio([{ name: 'x.txt', type: 'text/plain' }, { name: 'y.mp3', type: '' }]).name === 'y.mp3');
+
+  loadBuffer(buf);
+  var idx = Math.round(0.3 * 44100);
+  var origVal = edit.srcBuf.getChannelData(0)[idx];
+  ok('取样点非零', Math.abs(origVal) > 0.01, origVal.toFixed(3));
+
+  edit.sel = [0.2, 0.5];
+  silenceSelection();
+  ok('静音生效', Math.abs(edit.srcBuf.getChannelData(0)[idx]) < 1e-6, edit.srcBuf.getChannelData(0)[idx].toFixed(4));
+  undoEdit();
+  ok('撤销还原采样', Math.abs(edit.srcBuf.getChannelData(0)[idx] - origVal) < 1e-6, edit.srcBuf.getChannelData(0)[idx].toFixed(4));
+  redoEdit();
+  ok('重做再次静音', Math.abs(edit.srcBuf.getChannelData(0)[idx]) < 1e-6, edit.srcBuf.getChannelData(0)[idx].toFixed(4));
+
+  loadBuffer(buf);
+  edit.sel = [0, 0.5];
+  copySelection();
+  edit.playhead = 0.6;
+  var srcLenBefore = edit.srcBuf.length;
+  pasteAtPlayhead();
+  var pasted = null;
+  for (var pi = 0; pi < edit.clips.length; pi++) {
+    if (edit.clips[pi].a >= srcLenBefore) pasted = edit.clips[pi];
+  }
+  ok('粘贴写入独立副本', !!pasted, pasted ? ('a=' + pasted.a) : '未找到');
+  ok('源缓冲已扩容', edit.srcBuf.length > srcLenBefore, edit.srcBuf.length + ' vs ' + srcLenBefore);
+
+  renderTimeline().then(function (mixed) {
+    ok('合成结果非空', !!mixed && mixed.length > 0, mixed ? (mixed.length + ' 帧') : 'null');
+
+    var meta = serializeMeta();
+    ok('工程序列化含片段', meta.clips.length === edit.clips.length, 'clips=' + meta.clips.length);
+    ok('工程序列化含音符', Array.isArray(meta.notes), 'notes=' + meta.notes.length);
+    ok('工程序列化含参数', meta.bpm > 0 && typeof meta.gridDiv === 'number', 'bpm=' + meta.bpm);
+    ok('工程序列化不含音频数据', meta.audio === undefined && meta.audioBlob === undefined, '仅元数据');
+
+    /* ---- Web MIDI 事件入口 ---- */
+    (function () {
+      var keepRec = state.recording, keepT0 = state.t0, keepNotes = state.notes, keepPend = state.pending;
+      var keepCcs = state.ccs;
+      state.recording = true;
+      state.t0 = performance.now() - 1000;
+      state.notes = [];
+      state.pending = {};
+      state.ccs = [];
+
+      ok('USB 消息交给 handleMessage', applyMidiEvent(new Uint8Array([0x90, 60, 100]), 0) === true,
+         'pending=' + Object.keys(state.pending).length);
+      ok('USB Note On 进入 pending', !!state.pending[60], JSON.stringify(state.pending[60] || null));
+
+      applyMidiEvent(new Uint8Array([0x80, 60, 0]), 120);
+      ok('USB Note Off 落成音符', state.notes.length === 1 && state.notes[0].pitch === 60,
+         'notes=' + state.notes.length);
+
+      var ignored = applyMidiEvent(new Uint8Array([0xF8]), 200);
+      ok('系统实时消息被忽略', ignored === false, 'ret=' + ignored);
+
+      applyMidiEvent(new Uint8Array([0xB0, 64, 127]), 240);
+      ok('USB 踏板 CC 被记录', state.ccs.length === 1 && state.ccs[0].cc === 64,
+         'ccs=' + state.ccs.length);
+
+      state.recording = keepRec; state.t0 = keepT0;
+      state.notes = keepNotes; state.pending = keepPend; state.ccs = keepCcs;
+    })();
+    /* ---- 本轮修复的回归用例 ---- */
+
+    var ac2 = new OfflineAudioContext(2, 44100 * 3, 44100);
+    var tb = ac2.createBuffer(2, 44100 * 2, 44100);
+    var td0 = tb.getChannelData(0), td1 = tb.getChannelData(1);
+    for (var ti = 0; ti < 44100; ti++) { td0[ti] = Math.sin(ti / 20) * 0.5; td1[ti] = td0[ti]; }
+    for (var tj = Math.floor(44100 * 1.2); tj < 44100 * 2; tj++) { td0[tj] = Math.sin(tj / 20) * 0.5; td1[tj] = td0[tj]; }
+
+    // 1) 裁掉静音不能把后面的片段一起删掉
+    loadBuffer(tb);
+    splitRaw(1.0);
+    if (edit.clips[1]) edit.clips[1].start = 1.2;
+    afterChange();
+    var clipsBefore = edit.clips.length, durBefore = timelineDur();
+    trimSilence();
+    ok('裁静音保留全部片段', edit.clips.length === clipsBefore, clipsBefore + ' -> ' + edit.clips.length);
+    ok('裁静音未截断时间轴', timelineDur() > durBefore - 0.4, durBefore.toFixed(2) + ' -> ' + timelineDur().toFixed(2));
+
+    // 2) 原地特效必须让概览条缓存失效
+    loadBuffer(tb);
+    drawOverview();
+    edit.sel = [0.1, 0.9];
+    silenceSelection();
+    drawOverview();
+    var cols = Math.floor((ovPeaks ? ovPeaks.length : 0) / 2);
+    var zc = 0, tc = 0;
+    for (var vi = Math.floor(cols * 0.10); vi < Math.floor(cols * 0.40); vi++) {
+      tc++;
+      if (Math.abs(ovPeaks[vi * 2]) < 0.001 && Math.abs(ovPeaks[vi * 2 + 1]) < 0.001) zc++;
+    }
+    ok('特效后概览波形已刷新', tc > 0 && zc >= tc * 0.9, zc + '/' + tc + ' 列为静音');
+
+    // 3) 附点音符要按附点计拍
+    try {
+      var dotNote = new Vex.Flow.StaveNote({ clef: 'treble', keys: ['c/4'], duration: 'h', dots: 1, auto_stem: true });
+      ok('附点二分计 3 拍', dotNote.getTicks().value() === 12288, 'ticks=' + dotNote.getTicks().value());
+    } catch (e3) {
+      ok('附点二分计 3 拍', false, e3.message);
+    }
+
+    // 4) 升号调不出现重升/重降
+    var badAcc = 0;
+    [6, 1, 11, 5].forEach(function (tt) {
+      var kk = keyInfoFor(tt);
+      for (var pp = 0; pp < 12; pp++) { if (Math.abs(kk.spelling[pp].acc) > 1) badAcc++; }
+    });
+    ok('升号调无重升号', badAcc === 0, '越界 ' + badAcc + ' 个');
+
+    // 5) 3/4 的补白小节必须是 3 拍
+    var keepNotes = state.notes, keepSig = state.timeSig, keepBpm = state.bpm;
+    state.notes = [
+      { pitch: 72, vel: 90, tOn: 0, tOff: 400 },
+      { pitch: 74, vel: 90, tOn: 2000, tOff: 2400 },
+      { pitch: 76, vel: 90, tOn: 4000, tOff: 4400 }
+    ];
+    state.timeSig = '3/4';
+    state.bpm = 90;
+    var sc2 = buildScore();
+    var badBar = 0;
+    sc2.bass.forEach(function (bar) {
+      var sum = bar.reduce(function (a, it) { return a + it.b; }, 0);
+      if (Math.abs(sum - 3) > 0.01) badBar++;
+    });
+    ok('3/4 补白小节为 3 拍', badBar === 0, '异常小节 ' + badBar + ' 个');
+    state.notes = keepNotes; state.timeSig = keepSig; state.bpm = keepBpm;
+
+    // 6) BLE-MIDI 报文解析
+    var P1 = createMidiParser();
+    var r1 = P1.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64]));
+    ok('单消息包（梵西格式）', r1.length === 1 && r1[0].msg[0] === 0x90 && r1[0].msg[1] === 0x3C && r1[0].msg[2] === 0x64,
+       JSON.stringify(r1));
+
+    var P2 = createMidiParser();
+    var r2 = P2.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64, 0x81, 0x80, 0x3C, 0x00]));
+    ok('一包两条消息且各自带时间戳', r2.length === 2 && r2[0].ts === 0 && r2[1].ts === 1 && r2[1].msg[0] === 0x80,
+       'ts=' + r2.map(function (m) { return m.ts; }).join(','));
+
+    var P3 = createMidiParser();
+    var r3 = P3.feed(new Uint8Array([0x80 | 0x05, 0x80, 0x90, 0x3C, 0x64]));
+    ok('包头携带时间戳高位', r3.length === 1 && r3[0].ts === 640, 'ts=' + (r3[0] || {}).ts);
+
+    var P4 = createMidiParser();
+    var r4 = P4.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C, 0x64, 0x80, 0x3C, 0x00]));
+    ok('省略后续时间戳时沿用上一个', r4.length === 2 && r4[1].msg[0] === 0x80 && r4[1].ts === r4[0].ts,
+       'ts=' + r4.map(function (m) { return m.ts; }).join(','));
+
+    var P5 = createMidiParser();
+    var r5a = P5.feed(new Uint8Array([0x80, 0x80, 0x90, 0x3C]));
+    var r5b = P5.feed(new Uint8Array([0x80, 0x64]));
+    ok('跨包消息能拼接', r5a.length === 0 && r5b.length === 1 && r5b[0].msg[2] === 0x64,
+       r5a.length + ' + ' + JSON.stringify(r5b));
+
+    ok('解析器不再引用旧函数', typeof decodePacket === 'undefined' && typeof midiCarry === 'undefined',
+       'decodePacket=' + typeof decodePacket + ' midiCarry=' + typeof midiCarry);
+
+    var pass = out.filter(function (s) { return s.indexOf('PASS|') === 0; }).length;
+    var box = document.createElement('pre');
+    box.id = 'selftestOut';
+    box.style.cssText = 'position:fixed;left:0;top:0;z-index:9999;background:#fff;font:12px monospace;padding:8px;border:1px solid #ccc;white-space:pre';
+    box.textContent = out.join('\n');
+    document.body.appendChild(box);
+    document.title = 'SELFTEST ' + pass + '/' + out.length;
+  });
+}
+
+/* ---------- 绑定 ---------- */
+waveCanvas = $('wave');
+
+$('btnImport').addEventListener('click', function () { $('fileInput').click(); });
+$('fileInput').addEventListener('change', function (e) {
+  var f = e.target.files && e.target.files[0];
+  if (f) importAudioFile(f);
+  e.target.value = '';
+});
+$('btnFromTake').addEventListener('click', loadTakeForEdit);
+$('btnSplit').addEventListener('click', splitAtPlayhead);
+$('btnDelClip').addEventListener('click', deleteSelectedClip);
+$('btnCut').addEventListener('click', cutSelection);
+$('btnTrim').addEventListener('click', trimToSelection);
+$('btnCopy').addEventListener('click', copySelection);
+$('btnPaste').addEventListener('click', pasteAtPlayhead);
+$('btnSilence').addEventListener('click', silenceSelection);
+$('btnReverse').addEventListener('click', reverseSelection);
+$('btnNorm').addEventListener('click', normalizeSelection);
+$('btnFadeIn').addEventListener('click', function () { fadeSelection('in'); });
+$('btnFadeOut').addEventListener('click', function () { fadeSelection('out'); });
+$('btnTrimSilence').addEventListener('click', trimSilence);
+$('btnUndo').addEventListener('click', undoEdit);
+$('btnRedo').addEventListener('click', redoEdit);
+$('btnEditPlay').addEventListener('click', editPlay);
+$('btnEditStop').addEventListener('click', stopEditPlay);
+$('btnEditWav').addEventListener('click', exportEditWav);
+$('btnEditMp3').addEventListener('click', exportEditMp3);
+$('btnZoomIn').addEventListener('click', function () { zoomBy(0.6, edit.playhead); });
+$('btnZoomOut').addEventListener('click', function () { zoomBy(1.7, edit.playhead); });
+$('btnZoomFit').addEventListener('click', zoomFit);
+$('chkLoop').addEventListener('change', function (e) { edit.loop = e.target.checked; });
+
+waveCanvas.addEventListener('mousedown', onWaveDown);
+window.addEventListener('mousemove', onWaveMove);
+window.addEventListener('mouseup', onWaveUp);
+
+waveCanvas.addEventListener('mousemove', function (e) {
+  if (dragMode || !edit.srcBuf) return;
+  var x = localX(e);
+  var y = e.clientY - waveCanvas.getBoundingClientRect().top;
+  var c = 'default';
+  var hit = hitClip(x);
+  if (y < RULER_H) c = 'pointer';
+  else if (hit) c = hit.zone === 'body' ? 'grab' : 'ew-resize';
+  waveCanvas.style.cursor = c;
+});
+
+waveCanvas.addEventListener('wheel', function (e) {
+  if (!edit.srcBuf) return;
+  e.preventDefault();
+  if (e.shiftKey) {
+    edit.viewStart += (e.deltaY > 0 ? 1 : -1) * edit.viewDur * 0.15;
+    clampView();
+    setCacheDirty();
+    updateStatus();
+    drawWave();
+    return;
+  }
+  var t = clampNum(xToTime(localX(e)), 0, Math.max(timelineDur(), 0));
+  zoomBy(e.deltaY > 0 ? 1.2 : 0.83, t);
+}, { passive: false });
+
+waveCanvas.addEventListener('keydown', function (e) {
+  if (!edit.srcBuf) return;
+  var k = e.key;
+  var meta = e.ctrlKey || e.metaKey;
+
+  if (k === ' ') {
+    e.preventDefault();
+    if (edit.playing) stopEditPlay(); else editPlay();
+  } else if (k === 'Delete' || k === 'Backspace') {
+    e.preventDefault();
+    if (edit.selClip && !edit.sel) deleteSelectedClip(); else cutSelection();
+  } else if (meta && k.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) redoEdit(); else undoEdit();
+  } else if (meta && k.toLowerCase() === 'y') {
+    e.preventDefault();
+    redoEdit();
+  } else if (meta && k.toLowerCase() === 'c') {
+    e.preventDefault();
+    copySelection();
+  } else if (meta && k.toLowerCase() === 'v') {
+    e.preventDefault();
+    pasteAtPlayhead();
+  } else if (meta && k.toLowerCase() === 'b') {
+    e.preventDefault();
+    splitAtPlayhead();
+  } else if (k === 'ArrowLeft') {
+    e.preventDefault();
+    edit.playhead = clampNum(edit.playhead - (e.shiftKey ? 1 : 0.1), 0, Math.max(timelineDur(), 0));
+    updateStatus(); drawWave();
+  } else if (k === 'ArrowRight') {
+    e.preventDefault();
+    edit.playhead = clampNum(edit.playhead + (e.shiftKey ? 1 : 0.1), 0, Math.max(timelineDur(), 0));
+    updateStatus(); drawWave();
+  }
+});
+
+fitOverview();
+ovCanvas.addEventListener('mousedown', function (e) { ovDrag = true; ovSeek(e.clientX); });
+window.addEventListener('mousemove', function (e) { if (ovDrag) ovSeek(e.clientX); });
+window.addEventListener('mouseup', function () { ovDrag = false; });
+
+/* ---------- 拖拽导入 ---------- */
+function pickAudio(files) {
+  var exts = /\.(mp3|wav|m4a|aac|ogg|oga|flac|webm|aif|aiff|mp4)$/i;
+  if (!files) return null;
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    if (!f) continue;
+    if ((f.type && f.type.indexOf('audio/') === 0) || exts.test(f.name || '')) return f;
+  }
+  return null;
+}
+
+(function setupDrop() {
+  var counter = 0;
+
+  function hasFiles(e) {
+    var t = e.dataTransfer && e.dataTransfer.types;
+    if (!t) return false;
+    for (var i = 0; i < t.length; i++) if (t[i] === 'Files') return true;
+    return false;
+  }
+
+  window.addEventListener('dragenter', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    counter++;
+    document.body.classList.add('drop-active');
+  });
+
+  window.addEventListener('dragover', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  window.addEventListener('dragleave', function (e) {
+    if (!hasFiles(e)) return;
+    counter = Math.max(0, counter - 1);
+    if (e.relatedTarget === null) counter = 0;
+    if (counter === 0) document.body.classList.remove('drop-active');
+  });
+
+  window.addEventListener('drop', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    counter = 0;
+    document.body.classList.remove('drop-active');
+
+    var files = e.dataTransfer.files;
+    if (!files || !files.length) return;
+
+    for (var k = 0; k < files.length; k++) {
+      if (/\.json$/i.test(files[k].name || '')) { importProject(files[k]); return; }
+    }
+
+    var f = pickAudio(files);
+    if (!f) {
+      alert('拖进来的不是音频或工程文件。支持 mp3 / wav / m4a / flac / ogg / json。');
+      return;
+    }
+    importAudioFile(f);
+  });
+})();
+
+updateStatus();
+
+/* ============================================================
+   工程保存：IndexedDB 自动存 + .json 工程文件
+   ============================================================ */
+var DB_NAME = 'piano-desk';
+var DB_STORE = 'projects';
+var saveTimer = null;
+var pendingSnapshot = null;
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+function idbOpen() {
+  return new Promise(function (resolve, reject) {
+    var req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = function () {
+      var db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE);
+    };
+    req.onsuccess = function () { resolve(req.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+}
+
+function idbPut(key, val) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).put(val, key);
+      tx.oncomplete = function () { resolve(true); };
+      tx.onerror = function () { reject(tx.error); };
+      tx.onabort = function () { reject(tx.error); };
+    });
+  });
+}
+
+function idbGet(key) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readonly');
+      var req = tx.objectStore(DB_STORE).get(key);
+      req.onsuccess = function () { resolve(req.result || null); };
+      req.onerror = function () { reject(req.error); };
+    });
+  });
+}
+
+function idbDel(key) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve) {
+      var tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).delete(key);
+      tx.oncomplete = function () { resolve(true); };
+      tx.onerror = function () { resolve(false); };
+    });
+  });
+}
+
+function blobToBase64(blob) {
+  return new Promise(function (resolve, reject) {
+    var fr = new FileReader();
+    fr.onload = function () { resolve(String(fr.result).split(',')[1] || ''); };
+    fr.onerror = function () { reject(fr.error); };
+    fr.readAsDataURL(blob);
+  });
+}
+
+function base64ToBuffer(b64) {
+  var bin = atob(b64);
+  var len = bin.length;
+  var bytes = new Uint8Array(len);
+  for (var i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function serializeMeta() {
+  return {
+    v: 1,
+    ts: Date.now(),
+    notes: state.notes.map(function (n) {
+      return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff };
+    }),
+    bpm: state.bpm,
+    gridDiv: state.gridDiv,
+    timeSig: state.timeSig,
+    keyOverride: state.keyOverride,
+    clips: edit.clips.map(function (c) { return { id: c.id, a: c.a, b: c.b, start: c.start }; }),
+    nextId: edit.nextId,
+    playhead: edit.playhead,
+    hasAudio: !!edit.srcBuf
+  };
+}
+
+function scheduleSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(doAutosave, 1200);
+}
+
+function doAutosave() {
+  saveTimer = null;
+  if (!state.notes.length && !edit.srcBuf) return;
+
+  var meta = serializeMeta();
+  if (edit.srcBuf) {
+    try { meta.audioBlob = encodeWav(edit.srcBuf); } catch (e) {}
+  }
+
+  idbPut('autosave', meta).then(function () {
+    var el = $('savedHint');
+    if (el) {
+      var d = new Date();
+      el.textContent = '已自动保存 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+    }
+  }).catch(function () {
+    var el = $('savedHint');
+    if (el) el.textContent = '自动保存失败（可能是存储空间不足）';
+  });
+}
+
+async function applyProject(snap) {
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  state.bpm = snap.bpm || 90;
+  state.gridDiv = snap.gridDiv || 2;
+  state.timeSig = snap.timeSig || '4/4';
+  $('timeSig').value = state.timeSig;
+  state.keyOverride = snap.keyOverride || 'auto';
+  $('bpm').value = state.bpm;
+  $('bpmVal').textContent = state.bpm;
+  syncBpmLabel();
+  $('grid').value = String(state.gridDiv);
+  $('keySel').value = state.keyOverride;
+
+  state.notes = (snap.notes || []).map(function (n) {
+    return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff };
+  });
+  state.pending = {};
+  state.ccs = [];
+  state.lastDur = state.notes.length
+    ? Math.max.apply(null, state.notes.map(function (n) { return n.tOff; })) / 1000 : 0;
+  $('mNotes').textContent = state.notes.length;
+  $('mTime').textContent = state.lastDur.toFixed(1) + 's';
+  $('mCc').textContent = '0';
+
+  edit.undo = [];
+  edit.redo = [];
+  edit.sel = null;
+  edit.selClip = null;
+
+  var audioBuf = null;
+  try {
+    if (snap.audioBlob) {
+      audioBuf = await actx.decodeAudioData(await snap.audioBlob.arrayBuffer());
+    } else if (snap.audio) {
+      audioBuf = await actx.decodeAudioData(base64ToBuffer(snap.audio));
+    }
+  } catch (e) {
+    audioBuf = null;
+  }
+
+  if (audioBuf) {
+    edit.srcBuf = audioBuf;
+    edit.clips = (snap.clips || []).map(function (c) {
+      return { id: c.id, a: c.a, b: c.b, start: c.start };
+    });
+    var maxId = 0;
+    edit.clips.forEach(function (c) { if (c.id > maxId) maxId = c.id; });
+    edit.nextId = Math.max(snap.nextId || 1, maxId + 1);
+    if (!edit.clips.length) {
+      edit.clips = [{ id: nid(), a: 0, b: audioBuf.length, start: 0 }];
+    }
+    edit.playhead = Math.min(snap.playhead || 0, timelineDur());
+    edit.viewStart = 0;
+    edit.viewDur = Math.max(timelineDur(), 0.5);
+    edit.cacheKey = '';
+    ovPeaks = null;
+  } else {
+    edit.srcBuf = null;
+    edit.clips = [];
+    edit.viewDur = 0;
+  }
+
+  updateStatus();
+  buildScore();
+  renderAll();
+  if (state.notes.length || edit.srcBuf) {
+    ['btnPlay', 'btnMidi', 'btnWav', 'btnMp3', 'btnStop'].forEach(function (id) {
+      $(id).disabled = !(state.notes.length > 0);
+    });
+  }
+  updateMini();
+}
+
+async function exportProject() {
+  setPill('打包工程…');
+  try {
+    var meta = serializeMeta();
+    if (edit.srcBuf) meta.audio = await blobToBase64(encodeWav(edit.srcBuf));
+    var json = JSON.stringify(meta);
+    download(new Blob([json], { type: 'application/json' }), 'piano_project_' + stamp() + '.json');
+    setPill(state.deviceName || '已连接', 'on');
+  } catch (e) {
+    alert('工程导出失败：' + e.message);
+    setPill(state.deviceName || '已连接', 'on');
+  }
+}
+
+async function importProject(file) {
+  try {
+    var text = await file.text();
+    var snap = JSON.parse(text);
+    if (!snap || snap.v === undefined) throw new Error('不是有效的工程文件');
+    await applyProject(snap);
+    scheduleSave();
+    setPill('工程已载入', 'on');
+    setTimeout(function () { setPill(state.deviceName || '已连接', 'on'); }, 1600);
+  } catch (e) {
+    alert('打开工程失败：' + e.message);
+  }
+}
+
+function checkAutosave() {
+  idbGet('autosave').then(function (snap) {
+    if (!snap) return;
+    var hasNotes = snap.notes && snap.notes.length;
+    var hasClips = snap.clips && snap.clips.length;
+    if (!hasNotes && !hasClips) return;
+
+    pendingSnapshot = snap;
+    var d = new Date(snap.ts || Date.now());
+    var parts = [];
+    if (hasClips) parts.push(snap.clips.length + ' 段音频');
+    if (hasNotes) parts.push(snap.notes.length + ' 个音符');
+    $('restoreText').textContent = '发现上次的工作：' + parts.join('、')
+      + '（' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + '）';
+    $('restoreBar').classList.add('show');
+  }).catch(function () {});
+}
+
+$('btnRestore').addEventListener('click', function () {
+  if (!pendingSnapshot) return;
+  $('restoreBar').classList.remove('show');
+  applyProject(pendingSnapshot).then(function () {
+    pendingSnapshot = null;
+    setPill('已恢复上次工作', 'on');
+    setTimeout(function () { setPill(state.deviceName || '已连接', 'on'); }, 1800);
+  });
+});
+
+$('btnDiscard').addEventListener('click', function () {
+  $('restoreBar').classList.remove('show');
+  pendingSnapshot = null;
+  idbDel('autosave');
+});
+
+$('btnSaveProj').addEventListener('click', exportProject);
+$('btnOpenProj').addEventListener('click', function () { $('projInput').click(); });
+$('projInput').addEventListener('change', function (e) {
+  var f = e.target.files && e.target.files[0];
+  if (f) importProject(f);
+  e.target.value = '';
+});
+
+window.addEventListener('beforeunload', function () {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    doAutosave();
+  }
+});
+
+checkAutosave();
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+
+$('btnConnect').addEventListener('click', function () {
+  if (!state.connected) connect();
+});
+
+$('btnConnectUsb').addEventListener('click', function (e) {
+  e.stopPropagation();
+  if ($('midiMenu').classList.contains('show')) { midiMenuClose(); return; }
+  refreshMidiPorts();
+});
+
+document.addEventListener('click', function (e) {
+  if (!e.target.closest || !e.target.closest('.midi-wrap')) midiMenuClose();
+});
+
+window.addEventListener('beforeunload', function () { disconnectMidiInput(true); });
+
+$('btnRec').addEventListener('click', function () {
+  if (state.recording) stopRec(); else startRec();
+});
+
+$('btnPlay').addEventListener('click', play);
+
+$('btnStop').addEventListener('click', function () {
+  if (state.recording) stopRec();
+  stopPlay();
+  setPill(state.deviceName || '已连接', 'on');
+});
+
+$('btnMidi').addEventListener('click', exportMIDI);
+$('btnWav').addEventListener('click', exportWav);
+$('btnMp3').addEventListener('click', exportMp3);
+$('btnSamples').addEventListener('click', loadSamples);
+
+$('btnRebuild').addEventListener('click', function () {
+  if (!state.notes.length) return;
+  buildScore();
+  renderAll();
+});
+
+$('bpm').addEventListener('input', function (e) {
+  state.bpm = parseInt(e.target.value, 10);
+  state.bpmAuto = false;
+  $('bpmVal').textContent = state.bpm;
+  syncBpmLabel();
+});
+
+$('bpm').addEventListener('change', function () {
+  if (state.notes.length) { buildScore(); renderAll(); }
+  scheduleSave();
+});
+
+$('timeSig').addEventListener('change', function (e) {
+  state.timeSig = e.target.value;
+  if (state.notes.length) { buildScore(); renderAll(); }
+  scheduleSave();
+});
+
+$('grid').addEventListener('change', function (e) {
+  state.gridDiv = parseInt(e.target.value, 10);
+  if (state.notes.length) { buildScore(); renderAll(); }
+  scheduleSave();
+});
+
+$('keySel').addEventListener('change', function (e) {
+  state.keyOverride = e.target.value;
+  if (state.notes.length) { buildScore(); renderAll(); }
+  scheduleSave();
+});
+
+$('wet').addEventListener('input', function (e) {
+  state.wet = e.target.value / 100;
+  $('wetVal').textContent = e.target.value + '%';
+  if (live) live.wet.gain.value = state.wet;
+});
+
+$('vol').addEventListener('input', function (e) {
+  state.vol = e.target.value / 100;
+  $('volVal').textContent = e.target.value + '%';
+  if (live) live.master.gain.value = state.vol;
+});
+
+document.querySelectorAll('.tab').forEach(function (t) {
+  t.addEventListener('click', function () {});
+});
+
+window.addEventListener('resize', function () {
+  fitRoll();
+  fitWave();
+  fitOverview();
+  if (state.notes.length) { renderStaff(); renderJianpu(); }
+});
+
+(function fillKeyOptions() {
+  var sel = $('keySel');
+  for (var pc = 0; pc < 12; pc++) {
+    var o = document.createElement('option');
+    o.value = String(pc);
+    o.textContent = SHARP[pc].replace('#', '') + (SHARP[pc].indexOf('#') >= 0 ? ' 大调（升）' : ' 大调');
+    sel.appendChild(o);
+  }
+})();
+
+/* ---------- 迷你控制条 ---------- */
+function updateMini() {
+  var rec = $('mRec'), play = $('mPlay'), stop = $('mStop'), info = $('miniInfo');
+  if (!rec) return;
+  rec.textContent = state.recording ? '■ 停止' : '● 录音';
+  play.disabled = $('btnPlay').disabled;
+  stop.disabled = $('btnStop').disabled;
+  info.textContent = state.notes.length
+    ? (state.notes.length + ' 个音 · ' + (state.lastDur || 0).toFixed(1) + 's')
+    : (edit.srcBuf ? '已载入音频' : '');
+}
+
+(function setupMini() {
+  var card = $('btnRec').closest('.card');
+  if ('IntersectionObserver' in window && card) {
+    var io = new IntersectionObserver(function (entries) {
+      $('miniBar').classList.toggle('show', !entries[0].isIntersecting);
+    }, { threshold: 0.2 });
+    io.observe(card);
+  }
+  $('mRec').addEventListener('click', function () { $('btnRec').click(); });
+  $('mPlay').addEventListener('click', function () { $('btnPlay').click(); });
+  $('mStop').addEventListener('click', function () { $('btnStop').click(); });
+  $('declk').addEventListener('change', function (e) {
+    edit.declk = parseFloat(e.target.value) || 0;
+  });
+  updateMini();
+})();
+
+/* ---------- 帮助面板 ---------- */
+(function setupHelp() {
+  var mask = $('helpMask');
+  if (!mask) return;
+  function openHelp() { mask.classList.add('show'); }
+  function closeHelp() { mask.classList.remove('show'); }
+
+  $('btnHelp').addEventListener('click', openHelp);
+  $('btnHelpClose').addEventListener('click', closeHelp);
+  $('linkHelp').addEventListener('click', function (e) { e.preventDefault(); openHelp(); });
+  mask.addEventListener('click', function (e) { if (e.target === mask) closeHelp(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && mask.classList.contains('show')) closeHelp();
+  });
+
+  var hp = new URLSearchParams(location.search);
+  if (hp.has('help')) { openHelp(); return; }
+  if (hp.has('nohelp')) { return; }
+
+  try {
+    if (!localStorage.getItem('pianoStudio.seen')) {
+      localStorage.setItem('pianoStudio.seen', '1');
+      setTimeout(openHelp, 900);
+    }
+  } catch (e) {}
+})();
+
+fitRoll();
+fitWave();
+fitOverview();
+
+(function demo() {
+  var q = new URLSearchParams(location.search);
+  if (!q.has('demo')) return;
+  // 右手：C 大调音阶上下行；左手：每小节一组分解和弦，用来演示双谱表
+  var seq = [
+    [60,0,380],[62,420,760],[64,800,1140],[65,1180,1520],[67,1560,1960],
+    [69,2000,2400],[71,2440,2880],[72,2920,3400],[64,3450,3820],[67,3860,4280],
+    [72,4320,4900],[71,4940,5320],[69,5360,5740],[67,5780,6160],[65,6200,6580],
+    [64,6620,7000],[62,7040,7420],[60,7460,8100]
+  ];
+  var bass = [
+    [48,0,1290],[55,0,1290],[53,1330,2620],[48,1330,2620],
+    [45,2660,3950],[52,2660,3950],[43,3990,5280],[50,3990,5280],
+    [48,5320,6610],[55,5320,6610],[41,6650,7940],[48,6650,7940]
+  ];
+  state.notes = seq.map(function (s) { return { pitch: s[0], vel: 96, tOn: s[1], tOff: s[2] }; })
+    .concat(bass.map(function (s) { return { pitch: s[0], vel: 68, tOn: s[1], tOff: s[2] }; }));
+  state.lastDur = 8.1;
+  ['btnPlay', 'btnMidi', 'btnWav', 'btnMp3', 'btnStop'].forEach(function (id) { $(id).disabled = false; });
+  $('mNotes').textContent = state.notes.length;
+  $('mTime').textContent = '8.1s';
+  buildScore();
+
+  try {
+    var ac = new OfflineAudioContext(2, 44100 * 5, 44100);
+    var tb = ac.createBuffer(2, 44100 * 5, 44100);
+    for (var c = 0; c < 2; c++) {
+      var d = tb.getChannelData(c);
+      for (var i = 0; i < d.length; i++) {
+        var t = i / 44100;
+        d[i] = Math.sin(2 * Math.PI * 330 * t) * Math.exp(-t * 0.9) * Math.sin(t * 4.2) * 0.55;
+      }
+    }
+    loadBuffer(tb);
+    splitRaw(1.0);
+    splitRaw(2.4);
+    if (edit.clips[2]) edit.clips[2].start += 0.30;
+    edit.selClip = edit.clips[0];
+    edit.playhead = 1.62;
+    edit.sel = null;
+    edit.viewStart = 0;
+    edit.viewDur = 5.4;
+    afterChange();
+  } catch (e) {}
+
+  if (q.has('drop')) document.body.classList.add('drop-active');
+
+  renderAll();
+})();
+
+if (new URLSearchParams(location.search).has('idbtest')) {
+  (async function () {
+    try {
+      await idbPut('probe', { hello: 42, t: Date.now() });
+      var v = await idbGet('probe');
+      await idbDel('probe');
+      document.title = 'IDB OK ' + JSON.stringify(v);
+    } catch (e) {
+      document.title = 'IDB FAIL ' + (e && e.message);
+    }
+  })();
+}
+
+if (new URLSearchParams(location.search).has('selftest')) {
+  try { runSelfTest(); } catch (e) { document.title = 'SELFTEST CRASH ' + e.message; }
+}
+
+setPill('未连接');
+})();
