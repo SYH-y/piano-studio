@@ -41,6 +41,25 @@ var state = {
 };
 
 /* ============================================================
+   练习中心
+   ============================================================ */
+var practice = {
+  active: false,
+  startMs: 0,
+  endMs: 0,
+  speed: 100,
+  hand: 'all',
+  loop: true,
+  cycle: 0,
+  hits: 0,
+  total: 0,
+  wrong: 0,
+  expected: [],
+  cycleStartedAt: 0,
+  timer: null
+};
+
+/* ============================================================
    音频引擎
    ============================================================ */
 var actx = null, live = null;
@@ -364,6 +383,7 @@ var monitorNodes = {};
 
 function onNoteOn(pitch, vel, t) {
   lightKey(pitch, true);
+  practiceHandleNote(pitch);
   if (state.recording) {
     state.pending[pitch] = { pitch: pitch, vel: vel, tOn: t, tOff: null };
   }
@@ -743,6 +763,7 @@ function startRec() {
 function startRecNow() {
   initLive();
   if (actx.state === 'suspended') actx.resume();
+  if (practice.active) stopPractice();
 
   state.notes = [];
   state.pending = {};
@@ -781,6 +802,7 @@ function stopRec() {
   });
   state.pending = {};
   state.lastDur = t / 1000;
+  practiceSyncBounds();
 
   $('mNotes').textContent = state.notes.length;
   $('mTime').textContent = state.lastDur.toFixed(1) + 's';
@@ -879,6 +901,176 @@ function animatePlayhead() {
   if (!state.playing) return;
   drawRoll();
   requestAnimationFrame(animatePlayhead);
+}
+
+/* ============================================================
+   练习中心：选段循环、速度训练与基础命中统计
+   ============================================================ */
+function practiceDoneNotes() {
+  return state.notes.filter(function (n) { return n && n.tOff !== null && n.tOff > n.tOn; });
+}
+
+function practiceMaxSec() {
+  var notes = practiceDoneNotes();
+  var maxMs = 0;
+  notes.forEach(function (n) { if (n.tOff > maxMs) maxMs = n.tOff; });
+  return Math.max(state.lastDur || 0, maxMs / 1000);
+}
+
+function practiceMatchesHand(pitch) {
+  if (practice.hand === 'right') return pitch >= 60;
+  if (practice.hand === 'left') return pitch < 60;
+  return true;
+}
+
+function practiceUpdate() {
+  var start = $('practiceStart'), end = $('practiceEnd');
+  var max = practiceMaxSec();
+  if (start && end) {
+    start.max = max.toFixed(1);
+    end.max = max.toFixed(1);
+  }
+  if ($('practiceTempoVal')) $('practiceTempoVal').textContent = practice.speed + '%';
+  if ($('practiceRounds')) $('practiceRounds').textContent = practice.cycle;
+  if ($('practiceWrong')) $('practiceWrong').textContent = practice.wrong;
+  if ($('practiceAccuracy')) {
+    $('practiceAccuracy').textContent = practice.total ? Math.round(practice.hits / practice.total * 100) + '%' : '—';
+  }
+  var ready = practiceDoneNotes().length > 0;
+  if ($('btnPracticeStart')) $('btnPracticeStart').disabled = !ready || practice.active;
+  if ($('btnPracticeStop')) $('btnPracticeStop').disabled = !practice.active;
+  if ($('practiceHint') && !practice.active) {
+    $('practiceHint').textContent = ready
+      ? '选好起止时间后开始练习；弹奏时会按音高和时机统计基础准确率。'
+      : '录完一段后选择起止时间，软件会按当前速度循环播放这一段。';
+  }
+}
+
+function practiceSyncBounds() {
+  var max = practiceMaxSec();
+  var start = $('practiceStart'), end = $('practiceEnd');
+  if (!start || !end) return;
+  start.max = max.toFixed(1);
+  end.max = max.toFixed(1);
+  if (!(parseFloat(end.value) > 0) || parseFloat(end.value) > max) end.value = max.toFixed(1);
+  if (parseFloat(start.value) > max) start.value = '0';
+  practiceUpdate();
+}
+
+function practiceSetFull() {
+  var max = practiceMaxSec();
+  $('practiceStart').value = '0';
+  $('practiceEnd').value = max.toFixed(1);
+  practiceUpdate();
+}
+
+function practiceRange() {
+  var max = practiceMaxSec();
+  var a = Math.max(0, parseFloat($('practiceStart').value) || 0);
+  var b = Math.min(max, parseFloat($('practiceEnd').value) || max);
+  if (b <= a + 0.05) { a = 0; b = max; }
+  $('practiceStart').value = a.toFixed(1);
+  $('practiceEnd').value = b.toFixed(1);
+  return { start: a * 1000, end: b * 1000 };
+}
+
+function practiceStartCycle() {
+  if (!practice.active) return;
+  if (practice.timer) clearTimeout(practice.timer);
+  stopAllSound();
+  initLive();
+  if (actx.state === 'suspended') actx.resume();
+
+  var scale = 100 / practice.speed;
+  var notes = practiceDoneNotes().filter(function (n) {
+    return n.tOn >= practice.startMs && n.tOn < practice.endMs && practiceMatchesHand(n.pitch);
+  });
+  practice.expected = notes.map(function (n) {
+    return { pitch: n.pitch, at: (n.tOn - practice.startMs) / 1000 * scale, hit: false };
+  });
+  practice.total += practice.expected.length;
+  var base = actx.currentTime + 0.08;
+  practice.cycleStartedAt = performance.now() + 80;
+  var rel = $('sustain').checked ? 1.0 : 0.12;
+  notes.forEach(function (n) {
+    var at = base + (n.tOn - practice.startMs) / 1000 * scale;
+    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000 * scale);
+    playTone(actx, live, at, n.pitch, n.vel, dur, rel);
+  });
+
+  var cycleDur = Math.max(0.2, (practice.endMs - practice.startMs) / 1000 * scale);
+  if ($('practiceHint')) $('practiceHint').textContent = '第 ' + (practice.cycle + 1) + ' 轮 · 弹奏高亮声部，软件会统计音高和时机。';
+  practice.timer = setTimeout(function () {
+    if (!practice.active) return;
+    practice.cycle++;
+    practiceUpdate();
+    if (practice.loop) practiceStartCycle(); else stopPractice();
+  }, cycleDur * 1000 + 120);
+}
+
+function practiceHandleNote(pitch) {
+  if (!practice.active || !practiceMatchesHand(pitch)) return;
+  var elapsed = (performance.now() - practice.cycleStartedAt) / 1000;
+  var best = null, bestDiff = Infinity;
+  practice.expected.forEach(function (e) {
+    if (e.hit || e.pitch !== pitch) return;
+    var diff = Math.abs(e.at - elapsed);
+    if (diff < bestDiff) { best = e; bestDiff = diff; }
+  });
+  var tolerance = Math.max(0.18, 0.24 * (100 / practice.speed));
+  if (best && bestDiff <= tolerance) {
+    best.hit = true;
+    practice.hits++;
+  } else {
+    practice.wrong++;
+  }
+  practiceUpdate();
+}
+
+function startPractice() {
+  if (!practiceDoneNotes().length) { alert('还没有可练习的录音。先录一段或打开工程。'); return; }
+  if (practice.active) stopPractice();
+  stopPlay();
+  var range = practiceRange();
+  if (range.end - range.start < 100) return;
+  practice.startMs = range.start;
+  practice.endMs = range.end;
+  practice.speed = parseInt($('practiceTempo').value, 10) || 100;
+  practice.hand = $('practiceHand').value || 'all';
+  practice.loop = $('practiceLoop').checked;
+  practice.active = true;
+  practice.cycle = 0;
+  practice.hits = 0;
+  practice.total = 0;
+  practice.wrong = 0;
+  practiceUpdate();
+  setPill('练习中', 'rec');
+  practiceStartCycle();
+}
+
+function stopPractice() {
+  if (practice.timer) clearTimeout(practice.timer);
+  practice.timer = null;
+  var wasActive = practice.active;
+  practice.active = false;
+  practice.expected = [];
+  stopAllSound();
+  practiceUpdate();
+  if (wasActive) setPill(state.deviceName || '已连接', 'on');
+}
+
+function setupPractice() {
+  if (!$('btnPracticeStart')) return;
+  $('practiceTempo').addEventListener('input', function (e) {
+    practice.speed = parseInt(e.target.value, 10) || 100;
+    practiceUpdate();
+  });
+  $('practiceHand').addEventListener('change', function (e) { practice.hand = e.target.value; });
+  $('practiceLoop').addEventListener('change', function (e) { practice.loop = e.target.checked; });
+  $('practiceFull').addEventListener('click', practiceSetFull);
+  $('btnPracticeStart').addEventListener('click', startPractice);
+  $('btnPracticeStop').addEventListener('click', stopPractice);
+  practiceSyncBounds();
 }
 
 /* ============================================================
@@ -1022,6 +1214,7 @@ function afterNoteEdit() {
   buildScore();
   renderAll();
   $('mNotes').textContent = state.notes.length;
+  practiceSyncBounds();
   scheduleSave();
   updateNoteTools();
 }
@@ -4117,6 +4310,7 @@ async function applyProject(snap) {
   $('mNotes').textContent = state.notes.length;
   $('mTime').textContent = state.lastDur.toFixed(1) + 's';
   $('mCc').textContent = '0';
+  practiceSyncBounds();
 
   edit.undo = [];
   edit.redo = [];
@@ -4282,6 +4476,7 @@ $('btnPlay').addEventListener('click', play);
 
 $('btnStop').addEventListener('click', function () {
   if (state.recording) stopRec();
+  if (practice.active) stopPractice();
   stopPlay();
   setPill(state.deviceName || '已连接', 'on');
 });
@@ -4420,6 +4615,7 @@ fitRoll();
 fitWave();
 fitOverview();
 setupNoteEditor();
+setupPractice();
 
 (function demo() {
   var q = new URLSearchParams(location.search);
@@ -4438,6 +4634,7 @@ setupNoteEditor();
     ['btnPlay','btnMidi','btnWav','btnMp3','btnStop'].forEach(function (id) { $(id).disabled = false; });
     $('mNotes').textContent = state.notes.length;
     $('mTime').textContent = '8.8s';
+    practiceSyncBounds();
     buildScore();
     renderAll();
     return;
@@ -4460,6 +4657,7 @@ setupNoteEditor();
   ['btnPlay', 'btnMidi', 'btnWav', 'btnMp3', 'btnStop'].forEach(function (id) { $(id).disabled = false; });
   $('mNotes').textContent = state.notes.length;
   $('mTime').textContent = '8.1s';
+  practiceSyncBounds();
   buildScore();
 
   try {
