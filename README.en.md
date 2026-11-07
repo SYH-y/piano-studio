@@ -89,6 +89,7 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 - Real-time convolution reverb, bus limiter
 - Export **MIDI**, **WAV** (44.1 kHz / 16 bit), **MP3** (128 kbps, encoded in-browser)
 - Import standard MIDI files, select one or more tracks, and export staff or numbered notation as PNG or printable PDF with a title and author
+The top workspace switcher separates performance, notation, editing and project management, so the full app does not have to be used as one long scrolling page.
 
 ### Timeline editor
 - Multi-clip model: split, drag, trim both ends, delete, leave gaps and overlap
