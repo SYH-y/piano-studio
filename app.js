@@ -2070,12 +2070,8 @@ function clipAtTime(t) {
 }
 
 function neighborBounds(clip) {
-  sortClips();
-  var idx = edit.clips.indexOf(clip);
-  var prevEnd = 0, nextStart = Infinity;
-  if (idx > 0) prevEnd = clipEnd(edit.clips[idx - 1]);
-  if (idx >= 0 && idx < edit.clips.length - 1) nextStart = edit.clips[idx + 1].start;
-  return [prevEnd, nextStart];
+  // 允许片段重叠：不再用相邻片段夹住，只约束 start >= 0。交叉淡化负责过渡。
+  return [0, Infinity];
 }
 
 function cloneClips() {
@@ -2162,21 +2158,21 @@ function peakRange(sa, sb) {
   return [lo, hi];
 }
 
-function scheduleClipAt(ac, dest, clip, when, offset, dur) {
+function scheduleClipAt(ac, dest, clip, when, offset, dur, fadeIn, fadeOut) {
   var src = ac.createBufferSource();
   src.buffer = edit.srcBuf;
 
   var g = ac.createGain();
-  var fade = Math.max(0, Math.min(edit.declk || 0, dur * 0.4));
+  var fi = (fadeIn === undefined) ? (edit.declk || 0) : fadeIn;
+  var fo = (fadeOut === undefined) ? (edit.declk || 0) : fadeOut;
+  fi = Math.max(0, Math.min(fi, dur * 0.45));
+  fo = Math.max(0, Math.min(fo, dur * 0.45));
+  var t0 = when, t1 = when + dur;
 
-  if (fade > 0.0005) {
-    g.gain.setValueAtTime(0, when);
-    g.gain.linearRampToValueAtTime(1, when + fade);
-    g.gain.setValueAtTime(1, when + dur - fade);
-    g.gain.linearRampToValueAtTime(0, when + dur);
-  } else {
-    g.gain.value = 1;
-  }
+  g.gain.setValueAtTime(fi > 0.0005 ? 0 : 1, t0);
+  if (fi > 0.0005) g.gain.linearRampToValueAtTime(1, t0 + fi);
+  g.gain.setValueAtTime(1, Math.max(t0 + fi, t1 - fo));
+  if (fo > 0.0005) g.gain.linearRampToValueAtTime(0, t1);
 
   src.connect(g);
   g.connect(dest);
@@ -3063,9 +3059,24 @@ async function renderTimeline() {
   var dur = timelineDur();
   var ac = new OfflineAudioContext(2, Math.max(1, Math.ceil((dur + 0.3) * 44100)), 44100);
   var rate = sr();
-  edit.clips.forEach(function (c) {
-    scheduleClipAt(ac, ac.destination, c, c.start, 0, clipDur(c));
-  });
+  var declk = edit.declk || 0;
+  var sorted = edit.clips.slice().sort(function (a, b) { return a.start - b.start; });
+
+  for (var i = 0; i < sorted.length; i++) {
+    var c = sorted[i];
+    var cEnd = clipEnd(c);
+    var fadeIn = declk, fadeOut = declk;
+    // 与前一/后一片段重叠时，用完整重叠时长做交叉淡化
+    if (i > 0) {
+      var oPrev = Math.min(clipEnd(sorted[i - 1]), cEnd) - c.start;
+      if (oPrev > 0.001) fadeIn = Math.max(fadeIn, oPrev);
+    }
+    if (i + 1 < sorted.length) {
+      var oNext = Math.min(cEnd, clipEnd(sorted[i + 1])) - sorted[i + 1].start;
+      if (oNext > 0.001) fadeOut = Math.max(fadeOut, oNext);
+    }
+    scheduleClipAt(ac, ac.destination, c, c.start, 0, clipDur(c), fadeIn, fadeOut);
+  }
   return await ac.startRendering();
 }
 
@@ -3328,9 +3339,21 @@ function runSelfTest() {
   var clamped = Math.max(bnd[0], Math.min(wantStart, bnd[1] - clipDur(clip)));
   clip.start = clamped;
   sortClips();
-  ok('向左拖越界被钳制', clamped >= bnd[0] - 0.001, 'start=' + clamped.toFixed(3));
-  ok('移动后与后继不重叠', edit.clips[1].start >= clipEnd(clip) - 0.001,
-     'gap=' + (edit.clips[1].start - clipEnd(clip)).toFixed(3));
+  ok('向左拖越界被钳制', clamped >= 0 - 0.001, 'start=' + clamped.toFixed(3));
+  ok('允许重叠（bounds 放开）', bnd[0] === 0 && bnd[1] === Infinity,
+     'bnd=' + bnd[0] + ',' + bnd[1]);
+
+  // 交叉淡化：重叠片段按重叠时长淡入淡出，调度不抛错
+  (function () {
+    var okNoThrow = false;
+    try {
+      var ac3 = new OfflineAudioContext(2, 44100, 44100);
+      scheduleClipAt(ac3, ac3.destination, { id: 901, a: 0, b: 22050, start: 0 }, 0, 0, 0.5, 0.25, 0.25);
+      scheduleClipAt(ac3, ac3.destination, { id: 902, a: 22050, b: 44100, start: 0.25 }, 0.25, 0, 0.5, 0.25, 0.25);
+      okNoThrow = true;
+    } catch (e) {}
+    ok('交叉淡化调度不抛错', okNoThrow, okNoThrow ? 'ok' : '抛错');
+  })();
 
   edit.sel = [0, timelineDur()];
   copySelection();
