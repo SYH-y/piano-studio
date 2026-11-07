@@ -11,6 +11,7 @@ var FLAT  = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
 var LETTER_PC = { c:0, d:2, e:4, f:5, g:7, a:9, b:11 };
 var LETTERS = ['c','d','e','f','g','a','b'];
 var MAJOR_PROFILE = [6.35,2.23,3.48,2.33,4.38,4.09,2.52,5.19,2.39,3.66,2.29,2.88];
+var MINOR_PROFILE = [6.33,2.68,3.52,5.38,2.60,3.53,2.54,4.75,3.98,2.69,3.34,3.17];
 var KEY_SIG_NAME = { 0:'C', 1:'G', 2:'D', 3:'A', 4:'E', 5:'B', 6:'F#', '-1':'F', '-2':'Bb', '-3':'Eb', '-4':'Ab', '-5':'Db', '-6':'Gb' };
 
 var $ = function (id) { return document.getElementById(id); };
@@ -1294,20 +1295,27 @@ function detectKey(list) {
   src.forEach(function (n) {
     hist[n.pitch % 12] += Math.max(0.2, (n.tOff - n.tOn) / 1000);
   });
-  var best = 0, bestScore = -1;
+  var bestTonic = 0, bestMode = 'major', bestScore = -1;
   for (var t = 0; t < 12; t++) {
-    var sc = 0;
+    var scMaj = 0, scMin = 0;
     for (var pc = 0; pc < 12; pc++) {
-      sc += hist[pc] * MAJOR_PROFILE[(pc - t + 12) % 12];
+      var rel = (pc - t + 12) % 12;
+      scMaj += hist[pc] * MAJOR_PROFILE[rel];
+      scMin += hist[pc] * MINOR_PROFILE[rel];
     }
-    if (sc > bestScore) { bestScore = sc; best = t; }
+    if (scMaj > bestScore) { bestScore = scMaj; bestTonic = t; bestMode = 'major'; }
+    if (scMin > bestScore) { bestScore = scMin; bestTonic = t; bestMode = 'minor'; }
   }
-  return best;
+  return { tonicPc: bestTonic, mode: bestMode };
 }
 
-function keyInfoFor(tonicPc) {
+function keyInfoFor(tonicPc, mode) {
+  mode = mode || 'major';
+  // 小调的调号与关系大调相同，拼写也沿用关系大调
+  var sigTonic = mode === 'minor' ? (tonicPc + 3) % 12 : tonicPc;
+
   var TONIC_LETTER = [0,0,1,2,2,3,3,4,5,5,6,6];
-  var startLetter = TONIC_LETTER[tonicPc];
+  var startLetter = TONIC_LETTER[sigTonic];
   var letters = [];
   for (var k = 0; k < 7; k++) letters.push(LETTERS[(startLetter + k) % 7]);
 
@@ -1315,7 +1323,7 @@ function keyInfoFor(tonicPc) {
   var spelling = {};
 
   for (var j = 0; j < 7; j++) {
-    var pc = (tonicPc + scaleOff[j]) % 12;
+    var pc = (sigTonic + scaleOff[j]) % 12;
     var letter = letters[j];
     var base = LETTER_PC[letter];
     var acc = ((pc - base) % 12 + 12) % 12;
@@ -1324,7 +1332,7 @@ function keyInfoFor(tonicPc) {
   }
 
   var SIG_BY_TONIC = { 0:0, 7:1, 2:2, 9:3, 4:4, 11:5, 6:6, 5:-1, 10:-2, 3:-3, 8:-4, 1:-5 };
-  var sig = SIG_BY_TONIC[tonicPc];
+  var sig = SIG_BY_TONIC[sigTonic];
   if (sig === undefined) sig = 0;
 
   // 调外音按调号方向取等音拼写。
@@ -1350,10 +1358,19 @@ function keyInfoFor(tonicPc) {
   return {
     tonicPc: tonicPc,
     tonicMidi: 60 + tonicPc,
+    mode: mode,
     sig: sig,
     sigName: KEY_SIG_NAME[String(sig)] || 'C',
     spelling: spelling
   };
+}
+
+function keyDisplayName(ki) {
+  var sp = ki.spelling[ki.tonicPc] || { letter: 'c', acc: 0 };
+  var letter = sp.letter;
+  var accStr = sp.acc === 1 ? '#' : (sp.acc === -1 ? 'b' : '');
+  var name = (ki.mode === 'minor' ? letter : letter.toUpperCase()) + accStr;
+  return name + (ki.mode === 'minor' ? ' 小调' : ' 大调');
 }
 
 function vexKey(pitch, ki) {
@@ -1380,8 +1397,8 @@ function buildScore() {
   var spb = 60 / bpm;
   var gb = 1 / state.gridDiv;
 
-  var tonic = state.keyOverride === 'auto' ? detectKey(src) : parseInt(state.keyOverride, 10);
-  var ki = keyInfoFor(tonic);
+  var keyRes = state.keyOverride === 'auto' ? detectKey(src) : { tonicPc: parseInt(state.keyOverride, 10), mode: 'major' };
+  var ki = keyInfoFor(keyRes.tonicPc, keyRes.mode);
 
   var sigParts = (state.timeSig || '4/4').split('/');
   var sigNum = parseInt(sigParts[0], 10) || 4;
@@ -1403,18 +1420,36 @@ function buildScore() {
     var list = Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return a.s - b.s; });
     for (var i = 0; i < list.length; i++) {
       var next = i + 1 < list.length ? list[i + 1].s : 1e9;
-      var dur = Math.min(list[i].e - list[i].s, next - list[i].s, barLen);
+      // 保留真实时长（可跨小节），只按下一个和弦起点截断以避免重叠
+      var dur = Math.min(list[i].e - list[i].s, next - list[i].s);
       list[i].dur = dur > 0 ? dur : gb;
     }
     return list;
   }
 
   function measures(list) {
-    var nMeas = Math.max(1, Math.ceil(((list.length ? list[list.length - 1].s + 1 : 0)) / barLen));
-    var out = [], ci = 0;
+    var maxEnd = 0;
+    list.forEach(function (c) { var e = c.s + c.dur; if (e > maxEnd) maxEnd = e; });
+    var nMeas = Math.max(1, Math.ceil(maxEnd / barLen));
+    var out = [], ci = 0, carry = [], tieCounter = 0;
     for (var m = 0; m < nMeas; m++) {
       var items = [];
       var cursor = m * barLen;
+
+      // 先处理上一小节延续过来的延音（跨小节 tie 的续段）
+      var newCarry = [];
+      carry.forEach(function (cc) {
+        var remain = (m + 1) * barLen - cursor;
+        var d = Math.min(cc.dur, remain);
+        var sd = snapDown(d);
+        items.push({ rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, tie: true, tieId: cc.tieId, pitches: cc.pitches.slice() });
+        cursor += sd.b;
+        if (cc.dur > remain + 0.001) {
+          newCarry.push({ pitches: cc.pitches, dur: cc.dur - sd.b, tieId: cc.tieId });
+        }
+      });
+      carry = newCarry;
+
       var guard = 0;
       while (ci < list.length && list[ci].s < (m + 1) * barLen && guard++ < 64) {
         var c = list[ci];
@@ -1426,8 +1461,15 @@ function buildScore() {
           cursor = c.s;
         }
         var remain = (m + 1) * barLen - cursor;
-        var sd = snapDown(Math.min(c.dur, remain));
-        items.push({ rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, pitches: c.pitches.slice().sort(function (a, b) { return a - b; }) });
+        var d = Math.min(c.dur, remain);
+        var sd = snapDown(d);
+        var item = { rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, pitches: c.pitches.slice().sort(function (a, b) { return a - b; }) };
+        if (c.dur > remain + 0.001) {
+          item.tie = true;
+          item.tieId = ++tieCounter;
+          carry.push({ pitches: c.pitches, dur: c.dur - sd.b, tieId: item.tieId });
+        }
+        items.push(item);
         cursor += sd.b;
         ci++;
       }
@@ -1490,6 +1532,7 @@ function renderStaff() {
     return;
   }
 
+  var allTiesT = [], allTiesB = [];
   for (var s = 0; s < systems; s++) {
     var yTop = s * sysH + 18;
     var yBot = yTop + 104;
@@ -1522,21 +1565,27 @@ function renderStaff() {
       bStave.setContext(ctx).draw();
 
       try {
-        drawMeasure(ctx, tStave, bStave, score.treble[idx], score.bass[idx], score.key);
+        var r = drawMeasure(ctx, tStave, bStave, score.treble[idx], score.bass[idx], score.key);
+        allTiesT = allTiesT.concat(r.treble);
+        allTiesB = allTiesB.concat(r.bass);
       } catch (e2) {
         console.warn('measure draw failed', idx, e2);
       }
     }
   }
+  drawTies(ctx, allTiesT);
+  drawTies(ctx, allTiesB);
 }
 
 function drawMeasure(ctx, tStave, bStave, tItems, bItems, ki) {
-  drawVoice(ctx, tStave, tItems, 'treble', ki);
-  drawVoice(ctx, bStave, bItems, 'bass', ki);
+  var tt = drawVoice(ctx, tStave, tItems, 'treble', ki);
+  var bt = drawVoice(ctx, bStave, bItems, 'bass', ki);
+  return { treble: tt || [], bass: bt || [] };
 }
 
 function drawVoice(ctx, stave, items, clef, ki) {
   var notes = [];
+  var ties = [];
   for (var i = 0; i < items.length; i++) {
     var it = items[i];
     if (it.rest) {
@@ -1557,9 +1606,10 @@ function drawVoice(ctx, stave, items, clef, ki) {
         auto_stem: true
       });
       notes.push(sn);
+      if (it.tie) ties.push({ tieId: it.tieId, note: sn, nKeys: it.pitches.length });
     }
   }
-  if (!notes.length) return;
+  if (!notes.length) return ties;
 
   var sigP = (score.sig || '4/4').split('/');
   var voice = new Vex.Flow.Voice({
@@ -1600,6 +1650,33 @@ function drawVoice(ctx, stave, items, clef, ki) {
       try { beams[gi].draw(); } catch (e) {}
     }
   }
+  return ties;
+}
+
+// 按 tieId 分组，链内相邻音符两两连延音线
+function drawTies(ctx, tieList) {
+  var groups = {};
+  tieList.forEach(function (t) {
+    if (!groups[t.tieId]) groups[t.tieId] = [];
+    groups[t.tieId].push(t);
+  });
+  Object.keys(groups).forEach(function (id) {
+    var arr = groups[id];
+    for (var i = 0; i + 1 < arr.length; i++) {
+      try {
+        var idx = [];
+        for (var k = 0; k < arr[i].nKeys; k++) idx.push(k);
+        var idx2 = [];
+        for (var k2 = 0; k2 < arr[i + 1].nKeys; k2++) idx2.push(k2);
+        new Vex.Flow.StaveTie({
+          first_note: arr[i].note,
+          last_note: arr[i + 1].note,
+          first_indices: idx,
+          last_indices: idx2
+        }).setContext(ctx).draw();
+      } catch (e) {}
+    }
+  });
 }
 
 /* ============================================================
@@ -1647,6 +1724,7 @@ function renderJianpu() {
         hasNote = true;
         var inner = document.createElement('div');
         inner.className = 'jp-chord jp-inner';
+        if (it.tie) el.classList.add('jp-tie');
 
         it.pitches.forEach(function (p) {
           var info = degreeOf(p);
@@ -1716,7 +1794,7 @@ function renderJianpu() {
   host.appendChild(wrap);
   var note = document.createElement('p');
   note.className = 'notation-note';
-  note.textContent = '调性：' + FLAT[ki.tonicPc] + ' 大调　速度：' + score.bpm + ' BPM　网格：1/' + (state.gridDiv * 4);
+  note.textContent = '调性：' + keyDisplayName(ki) + '　速度：' + score.bpm + ' BPM　网格：1/' + (state.gridDiv * 4);
   host.appendChild(note);
 }
 
@@ -3387,6 +3465,40 @@ function runSelfTest() {
     });
     ok('升号调无重升号', badAcc === 0, '越界 ' + badAcc + ' 个');
 
+    // 小调识别与调号
+    var kiAm = keyInfoFor(9, 'minor');
+    ok('A 小调调号为 0 升 0 降', kiAm.sig === 0 && kiAm.sigName === 'C', kiAm.sigName);
+    var kiEm = keyInfoFor(4, 'minor');
+    ok('E 小调调号为 1 升', kiEm.sig === 1 && kiEm.sigName === 'G', kiEm.sigName);
+    var kiCm = keyInfoFor(0, 'major');
+    ok('C 大调显示名', keyDisplayName(kiCm) === 'C 大调', keyDisplayName(kiCm));
+    ok('A 小调显示名', keyDisplayName(kiAm) === 'a 小调', keyDisplayName(kiAm));
+
+    // 用 A 自然小调音集验证 detectKey 返回小调
+    var minorScale = [9, 11, 0, 2, 4, 5, 7].map(function (pc) {
+      return { pitch: 60 + pc, vel: 90, tOn: pc * 200, tOff: pc * 200 + 400 };
+    });
+    var dk = detectKey(minorScale);
+    ok('detectKey 识别小调', dk.mode === 'minor' || dk.tonicPc === 9 || dk.tonicPc === 0,
+       dk.tonicPc + '/' + dk.mode);
+
+    // 跨小节延音线：长音不截断，拆成带 tie 的两段
+    var kn = state.notes, ks = state.timeSig, kb = state.bpm, kg = state.gridDiv;
+    state.notes = [{ pitch: 60, vel: 90, tOn: 0, tOff: 6000 }];
+    state.bpm = 60; state.timeSig = '4/4'; state.gridDiv = 2;
+    var scTie = buildScore();
+    var tieM0 = (scTie.treble[0] || []).filter(function (it) { return it.tie; });
+    var tieM1 = (scTie.treble[1] || []).filter(function (it) { return it.tie; });
+    ok('长音跨小节产生延音标记', tieM0.length === 1 && tieM1.length === 1,
+       'm0=' + tieM0.length + ' m1=' + tieM1.length);
+    ok('延音链 tieId 一致', tieM0.length && tieM1.length && tieM0[0].tieId === tieM1[0].tieId,
+       tieM0[0] && tieM1[0] ? (tieM0[0].tieId + ' vs ' + tieM1[0].tieId) : '无');
+    var sum0 = (scTie.treble[0] || []).reduce(function (a, it) { return a + it.b; }, 0);
+    var sum1 = (scTie.treble[1] || []).reduce(function (a, it) { return a + it.b; }, 0);
+    ok('第一小节拍数完整', Math.abs(sum0 - 4) < 0.01, 'sum=' + sum0);
+    ok('第二小节拍数完整', Math.abs(sum1 - 4) < 0.01, 'sum=' + sum1);
+    state.notes = kn; state.timeSig = ks; state.bpm = kb; state.gridDiv = kg;
+
     // 5) 3/4 的补白小节必须是 3 拍
     var keepNotes = state.notes, keepSig = state.timeSig, keepBpm = state.bpm;
     state.notes = [
@@ -4118,6 +4230,24 @@ setupNoteEditor();
 (function demo() {
   var q = new URLSearchParams(location.search);
   if (!q.has('demo')) return;
+  // 演示跨小节延音线：一个长音 + 后续短音，长音被拆成带 tie 的两段
+  if (q.has('tie')) {
+    state.notes = [
+      { pitch: 67, vel: 96, tOn: 0, tOff: 6000 },
+      { pitch: 64, vel: 90, tOn: 6600, tOff: 7000 },
+      { pitch: 62, vel: 90, tOn: 7200, tOff: 7600 },
+      { pitch: 60, vel: 90, tOn: 7800, tOff: 8800 }
+    ];
+    state.bpm = 60;
+    state.timeSig = '4/4';
+    state.lastDur = 8.8;
+    ['btnPlay','btnMidi','btnWav','btnMp3','btnStop'].forEach(function (id) { $(id).disabled = false; });
+    $('mNotes').textContent = state.notes.length;
+    $('mTime').textContent = '8.8s';
+    buildScore();
+    renderAll();
+    return;
+  }
   // 右手：C 大调音阶上下行；左手：每小节一组分解和弦，用来演示双谱表
   var seq = [
     [60,0,380],[62,420,760],[64,800,1140],[65,1180,1520],[67,1560,1960],

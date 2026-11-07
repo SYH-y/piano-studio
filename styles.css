@@ -261,6 +261,8 @@
   .jp-u1{border-bottom:1px solid var(--ink); padding-bottom:1px;}
   .jp-u2{border-bottom:3px double var(--ink); padding-bottom:1px;}
   .jp-hold{color:var(--muted); margin-left:2px;}
+
+  .jp-tie::before{content:'⌒'; position:absolute; top:-0.6em; left:50%; transform:translateX(-50%); color:var(--ink); font-size:0.85em; line-height:1;}
   .jp-rest{font-size:15px;}
   .notation-note{font-size:12px; color:var(--faint); margin-top:10px;}
 
