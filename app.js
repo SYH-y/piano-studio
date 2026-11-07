@@ -2421,7 +2421,10 @@ var currentWorkspace = 'performance';
 function setWorkspace(name) {
   currentWorkspace = name;
   document.querySelectorAll('[data-workspace]').forEach(function (el) {
-    if (el.classList.contains('workspace-tab')) return;
+    // 跳过导航按钮本身，以及 <body>：body 上挂的是「当前工作区」状态，
+    // 如果让它也被 [data-workspace] 选中，第二次点击时 body 会被加上
+    // workspace-hidden（display:none !important），整页直接白屏。
+    if (el === document.body || el.classList.contains('workspace-tab')) return;
     var groups = (el.getAttribute('data-workspace') || '').split(/\s+/);
     el.classList.toggle('workspace-hidden', groups.indexOf(name) < 0);
   });
@@ -2436,7 +2439,8 @@ function setWorkspace(name) {
     return !el.classList.contains('workspace-hidden');
   });
   if (layout) layout.classList.toggle('workspace-single', !asideVisible);
-  document.body.setAttribute('data-workspace', name);
+  // 单独属性名记录当前工作区，避免和上面 [data-workspace] 的选择器互相踩
+  document.body.setAttribute('data-workspace-current', name);
   if (name === 'edit') {
     setTimeout(function () { fitWave(); fitOverview(); }, 30);
   }
@@ -4179,7 +4183,8 @@ function onWaveUp() {
 /* ---------- 自检 ---------- */
 function runSelfTest() {
   document.querySelectorAll('[data-workspace]').forEach(function (el) {
-    if (!el.classList.contains('workspace-tab')) el.classList.remove('workspace-hidden');
+    if (el === document.body || el.classList.contains('workspace-tab')) return;
+    el.classList.remove('workspace-hidden');
   });
   fitRoll();
   fitWave();

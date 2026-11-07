@@ -270,15 +270,24 @@ async function runSmoke(win, outPath) {
   const tone = await win.webContents.executeJavaScript('typeof (window.AudioContext || window.webkitAudioContext)');
   const workspace = await win.webContents.executeJavaScript(`(() => {
     const tabs = Array.from(document.querySelectorAll('.workspace-tab'));
-    const result = {};
+    const visible = {};
+    const result = { tabs: tabs.length, visible, bodyHeight: 0, bodyDisplay: '' };
     tabs.forEach((tab) => {
       tab.click();
       const name = tab.getAttribute('data-workspace');
-      const visible = Array.from(document.querySelectorAll('[data-workspace]'))
-        .filter((el) => !el.classList.contains('workspace-tab') && !el.classList.contains('workspace-hidden')).length;
-      result[name] = visible;
+      let count = 0;
+      document.querySelectorAll('[data-workspace]').forEach((el) => {
+        // 跳过 <body> 与导航按钮，按真实布局尺寸判断：用 class 判断会漏掉
+        // 「body 被加 workspace-hidden 导致整页白屏」这个 bug
+        if (el === document.body || el.classList.contains('workspace-tab')) return;
+        if (el.getClientRects().length > 0) count++;
+      });
+      visible[name] = count;
     });
-    return { tabs: tabs.length, visible: result, error: document.body.innerText.indexOf('PIANO STUDIO') >= 0 ? '' : '页面没有主内容' };
+    result.bodyHeight = Math.round(document.body.getBoundingClientRect().height);
+    result.bodyDisplay = getComputedStyle(document.body).display;
+    result.error = document.body.innerText.indexOf('PIANO STUDIO') >= 0 ? '' : '页面没有主内容';
+    return result;
   })()`);
 
   if (outPath) {
@@ -290,7 +299,10 @@ async function runSmoke(win, outPath) {
     }
   }
 
-  const navOk = workspace && workspace.tabs === 4 && Object.keys(workspace.visible || {}).every((key) => workspace.visible[key] > 0) && !workspace.error;
+  const navOk = workspace && workspace.tabs === 4
+    && workspace.bodyDisplay !== 'none' && workspace.bodyHeight > 300
+    && Object.keys(workspace.visible || {}).every((key) => workspace.visible[key] > 0)
+    && !workspace.error;
   const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true && navOk;
 
   // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数

@@ -16,7 +16,7 @@
 
 </div>
 
-当前版本：**v1.7.0**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.8.0**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ![主界面](docs/main.png)
 

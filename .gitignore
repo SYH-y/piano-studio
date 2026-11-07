@@ -43,3 +43,6 @@ desktop/dist/
 # 桌面壳本地调试残留（Electron 运行时与残缺依赖，均为可再生的下载物）
 desktop/.electron/
 desktop/_nm_partial_broken/
+
+# 桌面版导航调试的临时产物
+desktop/nav-debug-result.json
