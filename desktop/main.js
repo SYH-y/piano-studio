@@ -278,7 +278,7 @@ async function runSmoke(win, outPath) {
     }
   }
 
-  const ok = /^SELFTEST 75\/75$/.test(title) && bt === 'object' && secure === true;
+  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true;
 
   // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数
   const resultPath = argOf('result');
