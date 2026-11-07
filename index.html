@@ -52,9 +52,16 @@
   <span class="mini-info" id="miniInfo"></span>
 </div>
 
+<nav class="workspace-nav" id="workspaceNav" aria-label="工作区">
+  <button class="workspace-tab active" data-workspace="performance" type="button">演奏</button>
+  <button class="workspace-tab" data-workspace="score" type="button">制谱</button>
+  <button class="workspace-tab" data-workspace="edit" type="button">剪辑</button>
+  <button class="workspace-tab" data-workspace="project" type="button">工程</button>
+</nav>
+
 <main class="layout">
   <section>
-    <div class="card transport-card">
+    <div class="card transport-card" data-workspace="performance">
       <div class="transport">
         <button class="btn" id="btnRec">● 开始录音</button>
         <button class="btn" id="btnPlay" disabled>▶ 播放</button>
@@ -67,11 +74,11 @@
       </div>
     </div>
 
-    <div class="card tight keyboard-card">
+    <div class="card tight keyboard-card" data-workspace="performance">
       <div class="keys-scroll"><div class="keys" id="keys"></div></div>
     </div>
 
-    <div class="card roll-card">
+    <div class="card roll-card" data-workspace="performance">
       <div class="card-head">钢琴卷帘<span class="sub">点选音符可编辑：拖动移动、上下改音高、拖右端改时值</span></div>
       <div class="note-tools">
         <span class="note-sel" id="noteSel">没有音符可编辑</span>
@@ -96,17 +103,17 @@
       <p id="printHeadingAuthor"></p>
     </div>
 
-    <div class="card score-card staff-card">
+    <div class="card score-card staff-card" data-workspace="score">
       <div class="card-head">五线谱<span class="sub" id="staffMeta">高音 / 低音双谱表，自动识别调性</span></div>
       <div id="staffHost"><p class="empty">录一段，这里会生成五线谱</p></div>
     </div>
 
-    <div class="card score-card jianpu-card">
+    <div class="card score-card jianpu-card" data-workspace="score">
       <div class="card-head">简谱<span class="sub" id="jianpuMeta">数字谱，含高低音点与减时线</span></div>
       <div id="jianpuHost"><p class="empty">录一段，这里会生成简谱</p></div>
     </div>
 
-    <div class="card audio-card">
+    <div class="card audio-card" data-workspace="edit">
       <div class="card-head">
         <span>音频剪辑</span><span class="sub">多片段时间轴 · 分割 / 拖动 / 裁剪 / 淡入淡出 / 换序</span>
         <div class="head-actions">
@@ -171,7 +178,7 @@
   </section>
 
   <aside>
-    <div class="card">
+    <div class="card score-settings-card" data-workspace="score">
       <h3>制谱设置<span class="sub">影响五线谱与简谱</span></h3>
       <div class="field">
         <label>速度 BPM <b id="bpmVal">90</b></label>
@@ -204,7 +211,7 @@
       <p class="hint">速度估准了，谱子才准。点「重新排版」会按当前 BPM 和网格重新量化。</p>
     </div>
 
-    <div class="card practice-card">
+    <div class="card practice-card" data-workspace="performance">
       <h3>练习中心<span class="sub">选段循环 · 速度训练 · 练习统计</span></h3>
       <div class="practice-range">
         <label>开始 <input id="practiceStart" type="number" min="0" step="0.1" value="0"></label>
@@ -237,7 +244,7 @@
       <p class="hint" id="practiceHint">录完一段后选择起止时间，软件会按当前速度循环播放这一段。</p>
     </div>
 
-    <div class="card midi-card">
+    <div class="card midi-card" data-workspace="project">
       <h3>MIDI 文件<span class="sub">导入多轨 · 选择声部 · 继续编辑</span></h3>
       <div class="export-row">
         <button class="btn" id="btnMidiImport">导入 MIDI</button>
@@ -249,7 +256,7 @@
       <div class="midi-track-list" id="midiTrackList"></div>
     </div>
 
-    <div class="card score-export-card">
+    <div class="card score-export-card" data-workspace="score">
       <h3>谱面导出<span class="sub">PNG · 打印 · PDF</span></h3>
       <div class="field">
         <label>曲名</label>
@@ -267,7 +274,7 @@
       <p class="hint">先录音或载入 MIDI，再导出当前谱面。打印窗口中选择“保存为 PDF”即可生成文件。</p>
     </div>
 
-    <div class="card">
+    <div class="card tone-card" data-workspace="performance project">
       <h3>音色与混音</h3>
       <button class="btn wide" id="btnSamples" style="margin-bottom:12px;">加载真实钢琴采样</button>
       <div class="field">
@@ -282,7 +289,7 @@
       <label class="checkbox"><input type="checkbox" id="monitor"> 边弹边听</label>
     </div>
 
-    <div class="card">
+    <div class="card project-export-card" data-workspace="project">
       <h3>导出</h3>
       <div class="export-row">
         <button class="btn" id="btnMidi" disabled>MIDI</button>
@@ -297,7 +304,7 @@
       <p class="hint">工程文件包含录音、片段和编辑状态，可备份或换设备打开。页面也会自动存一份到本机浏览器。</p>
     </div>
 
-    <div class="card">
+    <div class="card snapshot-card" data-workspace="project">
       <h3>版本快照</h3>
       <div class="export-row">
         <button class="btn full" id="btnSnapshot">保存当前版本</button>
@@ -306,10 +313,16 @@
       <p class="hint">每次录完音会自动存一个版本；也可手动保存。版本存在本机浏览器，最多保留最近 20 个，可随时恢复或删除。</p>
     </div>
 
-    <div class="card">
+    <div class="card pedal-card" data-workspace="project">
       <h3>踏板监视器</h3>
       <div class="ccbox mono" id="ccbox">等待数据…</div>
       <p class="hint">踩一下踏板，看这里有没有出现 <span class="mono">B0 40 xx</span>。如果没有，说明这台琴的踏板<b>不走蓝牙</b>，软件里的延音只能靠「模拟踏板」补。</p>
+    </div>
+
+    <div class="card diagnostic-card" data-workspace="project">
+      <h3>设备诊断<span class="sub">连接失败时先检查这里</span></h3>
+      <button class="btn wide" id="btnDiagnostics">打开连接诊断</button>
+      <p class="hint">检查安全上下文、蓝牙、USB-MIDI 和音频能力，不会自动连接设备。</p>
     </div>
   </aside>
 </main>
@@ -317,7 +330,7 @@
 <div class="modal-mask" id="helpMask">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
     <h2 id="helpTitle">三分钟上手</h2>
-    <p class="lead">这台工具把「弹」到「发出去」之间的所有环节串在了一个页面里，数据不离开本机。</p>
+    <p class="lead">顶部工作区可以切换“演奏、制谱、剪辑、工程”，每个页面只显示当前任务需要的工具，数据不离开本机。</p>
 
     <h4>基本流程</h4>
     <ol class="steps">
@@ -347,6 +360,19 @@
     <div class="modal-foot">
       <span class="grow"></span>
       <button class="btn primary" id="btnHelpClose">知道了</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-mask" id="diagnosticMask">
+  <div class="modal diagnostic-modal" role="dialog" aria-modal="true" aria-labelledby="diagnosticTitle">
+    <h2 id="diagnosticTitle">设备连接诊断</h2>
+    <p class="lead">先确认浏览器和当前设备能力，再尝试连接钢琴。诊断过程不会自动弹出蓝牙选择框。</p>
+    <div class="diagnostic-list" id="diagnosticList"></div>
+    <div class="modal-foot">
+      <button class="btn" id="btnDiagnosticRefresh">重新检查</button>
+      <span class="grow"></span>
+      <button class="btn" id="btnDiagnosticClose">关闭</button>
     </div>
   </div>
 </div>
