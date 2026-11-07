@@ -1,10 +1,11 @@
 # PIANO STUDIO
 
-**A browser-based workstation for digital pianos — from keystroke to finished track.**
+**A workstation for digital pianos — from keystroke to finished track.**
 
-Connect to your piano over Web Bluetooth (BLE-MIDI), watch standard notation and
-numbered notation appear as you play, render the performance to MIDI / WAV / MP3,
-and edit the result on a multi-clip timeline — all inside a local static app.
+Connect over Web Bluetooth (BLE-MIDI) and watch staff and numbered notation appear as you play.
+Built in: practice center, standard MIDI import, multi-clip timeline editor, microphone/line input.
+Export MIDI / WAV / MP3, or the score as PNG / PDF. Runs as a web page, or as a Windows app
+with in-app auto-update.
 
 No audio interface · No recording cable · No install · Works offline · Data never leaves your machine
 
@@ -12,7 +13,7 @@ No audio interface · No recording cable · No install · Works offline · Data 
 ![browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%2089%2B-0f6e56)
 ![build](https://img.shields.io/badge/build-none%20required-0f6e56)
 
-Current version: **v1.9.0**. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+Current version: **v1.9.1**. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 > 中文文档见 [README.md](README.md)
 

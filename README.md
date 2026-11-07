@@ -2,21 +2,39 @@
 
 # PIANO STUDIO
 
-**电钢琴蓝牙录音工作台 · 一个网页，从弹奏到成品**
+**电钢琴工作台 · 一个网页（或一个 App），从弹奏到成品**
 
-用 Web Bluetooth 直连电钢琴的 BLE-MIDI 通道，实时出五线谱和简谱，
-再把演奏渲染成 MIDI / WAV / MP3，并在内置的多片段时间轴里剪辑。
+用 Web Bluetooth 直连电钢琴的 BLE-MIDI 通道，边弹边出五线谱与简谱；
+带练习中心、MIDI 导入、多片段时间轴剪辑、麦克风 / 线路录音；
+最后导出 MIDI / WAV / MP3，或把谱面导成 PNG 与 PDF。
 
-不需要声卡 · 不需要内录线 · 不需要装任何软件 · 全程离线 · 数据不出本机
+不需要声卡 · 不需要内录线 · 不需要装任何东西 · 全程离线 · 数据不出本机
 
 ![license](https://img.shields.io/badge/license-MIT-0f6e56)
 ![browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%2089%2B-0f6e56)
 ![build](https://img.shields.io/badge/build-none%20required-0f6e56)
 ![offline](https://img.shields.io/badge/offline-ready-0f6e56)
+![desktop](https://img.shields.io/badge/desktop-Windows%20%C2%B7%20%E8%87%AA%E5%8A%A8%E6%9B%B4%E6%96%B0-0f6e56)
+
+**[在线使用](https://syh-y.github.io/piano-studio/)**  ·  **[下载 Windows 桌面版](https://github.com/SYH-y/piano-studio/releases/latest)**
 
 </div>
 
-当前版本：**v1.9.0**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.9.1**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+
+<details>
+<summary><b>现在能做什么（点开）</b></summary>
+
+| 环节 | 能力 |
+|---|---|
+| **录** | 蓝牙直连 BLE-MIDI（含踏板 CC64）；麦克风 / 声卡线路输入，带电平表、削波提示、监听与毫秒级延迟校准 |
+| **谱** | 实时**五线谱**（双谱表、调号、连梁、休止符）与**简谱**（高低音点、减时线），可指定 BPM 与量化网格重排 |
+| **练** | A/B 循环、40%–120% 变速、左右手声部筛选、轮次与准确率统计 |
+| **编** | 卷帘里拖动改音高/时值、力度、量化、撤销重做；导入标准 MIDI 并选轨合并 |
+| **剪** | 多片段时间轴：分割、拖动、裁剪、换序、留空隙、交叉淡化、归一化 |
+| **出** | MIDI / WAV / MP3；五线谱、简谱导出 PNG 或打印成 PDF（可填曲名与作者） |
+
+</details>
 
 ![主界面](docs/main.png)
 

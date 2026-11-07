@@ -1,8 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#0f6e56"/>
-  <rect x="6" y="8" width="6" height="16" rx="1.5" fill="#fff"/>
-  <rect x="13" y="8" width="6" height="16" rx="1.5" fill="#fff"/>
-  <rect x="20" y="8" width="6" height="16" rx="1.5" fill="#fff"/>
-  <rect x="10" y="8" width="4" height="8.5" rx="1" fill="#23231f"/>
-  <rect x="17" y="8" width="4" height="8.5" rx="1" fill="#23231f"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="PIANO STUDIO">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#15916a"/>
+      <stop offset="0.55" stop-color="#0f6e56"/>
+      <stop offset="1" stop-color="#0a4f3f"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.24" cy="0.16" r="0.85">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.18"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eab766"/>
+      <stop offset="1" stop-color="#c68e3c"/>
+    </linearGradient>
+    <linearGradient id="keyface" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e4eae4"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#04302a" flood-opacity="0.40"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="116" fill="url(#glow)"/>
+  <rect x="6" y="6" width="500" height="500" rx="110" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="3"/>
+
+  <g filter="url(#soft)">
+      <path d="M75 121 A5 5 0 0 1 80 116 H132 A5 5 0 0 1 137 121 V380 A16 16 0 0 1 121 396 H91 A16 16 0 0 1 75 380 Z" fill="url(#keyface)"/>
+      <path d="M150 121 A5 5 0 0 1 155 116 H207 A5 5 0 0 1 212 121 V380 A16 16 0 0 1 196 396 H166 A16 16 0 0 1 150 380 Z" fill="url(#keyface)"/>
+      <path d="M225 121 A5 5 0 0 1 230 116 H282 A5 5 0 0 1 287 121 V380 A16 16 0 0 1 271 396 H241 A16 16 0 0 1 225 380 Z" fill="url(#gold)"/>
+      <path d="M300 121 A5 5 0 0 1 305 116 H357 A5 5 0 0 1 362 121 V380 A16 16 0 0 1 346 396 H316 A16 16 0 0 1 300 380 Z" fill="url(#keyface)"/>
+      <path d="M375 121 A5 5 0 0 1 380 116 H432 A5 5 0 0 1 437 121 V380 A16 16 0 0 1 421 396 H391 A16 16 0 0 1 375 380 Z" fill="url(#keyface)"/>
+      <path d="M125 121 A5 5 0 0 1 130 116 H156 A5 5 0 0 1 161 121 V262 A12 12 0 0 1 149 274 H137 A12 12 0 0 1 125 262 Z" fill="#11362c"/>
+      <path d="M200 121 A5 5 0 0 1 205 116 H231 A5 5 0 0 1 236 121 V262 A12 12 0 0 1 224 274 H212 A12 12 0 0 1 200 262 Z" fill="#11362c"/>
+      <path d="M350 121 A5 5 0 0 1 355 116 H381 A5 5 0 0 1 386 121 V262 A12 12 0 0 1 374 274 H362 A12 12 0 0 1 350 262 Z" fill="#11362c"/>
+  </g>
 </svg>
