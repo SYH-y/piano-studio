@@ -68,6 +68,21 @@ var midiImport = {
   selected: {}
 };
 
+var audioInput = {
+  stream: null,
+  recorder: null,
+  chunks: [],
+  source: null,
+  gain: null,
+  analyser: null,
+  monitorGain: null,
+  meterRaf: 0,
+  gainValue: 1,
+  latencyMs: 0,
+  recording: false,
+  deviceId: ''
+};
+
 /* ============================================================
    音频引擎
    ============================================================ */
@@ -2479,6 +2494,8 @@ async function runDiagnostics() {
   }
   var audio = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
   rows.push(diagnosticRow('音频引擎', audio ? 'Web Audio 可用，可以监听和播放。' : '当前环境不支持 Web Audio。', audio ? 'ok' : 'bad'));
+  var input = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof MediaRecorder !== 'undefined');
+  rows.push(diagnosticRow('音频输入', input ? '支持麦克风或线路录音。' : '当前环境不支持 MediaRecorder 音频录音。', input ? 'ok' : 'warn'));
   rows.push(diagnosticRow('当前连接', state.connected ? (state.transport === 'usb' ? 'USB · ' : '蓝牙 · ') + (state.deviceName || '已连接') : '尚未连接钢琴。', state.connected ? 'ok' : 'warn'));
   rows.forEach(function (row) { host.appendChild(row); });
 }
@@ -2495,6 +2512,213 @@ function setupDiagnostics() {
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape' && mask.classList.contains('show')) close();
   });
+}
+
+/* ============================================================
+   音频输入：麦克风 / 线路录音与延迟校准
+   ============================================================ */
+function audioInputStatus(text) {
+  if ($('audioInputStatus')) $('audioInputStatus').textContent = text;
+}
+
+function audioInputUpdateUI() {
+  var rec = $('btnAudioRecord'), stop = $('btnAudioStop');
+  if (rec) {
+    rec.textContent = audioInput.recording ? '录音中…' : '开始录音';
+    rec.classList.toggle('danger', audioInput.recording);
+  }
+  if (stop) stop.disabled = !audioInput.recording;
+  if ($('audioInputGainVal')) $('audioInputGainVal').textContent = Math.round(audioInput.gainValue * 100) + '%';
+}
+
+async function refreshAudioInputDevices() {
+  var sel = $('audioInputDevice');
+  if (!sel || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    audioInputStatus('当前环境不支持音频输入设备枚举。');
+    return;
+  }
+  try {
+    var devices = await navigator.mediaDevices.enumerateDevices();
+    var inputs = devices.filter(function (d) { return d.kind === 'audioinput'; });
+    var keep = audioInput.deviceId || sel.value;
+    sel.textContent = '';
+    var def = document.createElement('option');
+    def.value = '';
+    def.textContent = inputs.length ? '默认输入设备' : '没有发现输入设备';
+    sel.appendChild(def);
+    inputs.forEach(function (d, i) {
+      var o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || ('输入设备 ' + (i + 1));
+      sel.appendChild(o);
+    });
+    sel.value = keep;
+    audioInputStatus(inputs.length ? '发现 ' + inputs.length + ' 个音频输入设备。' : '没有发现音频输入设备，请检查麦克风或声卡。');
+  } catch (e) {
+    audioInputStatus('读取输入设备失败：' + (e.message || e));
+  }
+}
+
+function stopAudioInputStream() {
+  if (audioInput.meterRaf) cancelAnimationFrame(audioInput.meterRaf);
+  audioInput.meterRaf = 0;
+  [audioInput.source, audioInput.gain, audioInput.analyser, audioInput.monitorGain].forEach(function (node) {
+    if (node) { try { node.disconnect(); } catch (e) {} }
+  });
+  audioInput.source = null;
+  audioInput.gain = null;
+  audioInput.analyser = null;
+  audioInput.monitorGain = null;
+  if (audioInput.stream) audioInput.stream.getTracks().forEach(function (track) { track.stop(); });
+  audioInput.stream = null;
+}
+
+function updateAudioInputMeter() {
+  if (!audioInput.recording || !audioInput.analyser) return;
+  var data = new Float32Array(audioInput.analyser.fftSize);
+  audioInput.analyser.getFloatTimeDomainData(data);
+  var peak = 0;
+  for (var i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+  var pct = Math.min(100, Math.round(peak * 100));
+  var level = $('audioInputLevel');
+  var peakText = $('audioInputPeak');
+  var clip = $('audioInputClip');
+  if (level) {
+    level.style.width = pct + '%';
+    level.classList.toggle('hot', peak > 0.75 && peak < 0.98);
+    level.classList.toggle('clip', peak >= 0.98);
+  }
+  if (peakText) peakText.textContent = peak > 0.0001 ? '峰值 ' + (20 * Math.log10(peak)).toFixed(1) + ' dB' : '峰值 —';
+  if (clip) {
+    clip.textContent = peak >= 0.98 ? '已削波' : '未削波';
+    clip.classList.toggle('clip', peak >= 0.98);
+  }
+  audioInput.meterRaf = requestAnimationFrame(updateAudioInputMeter);
+}
+
+function offsetAudioBuffer(buf, offsetMs) {
+  var shift = Math.round(offsetMs / 1000 * buf.sampleRate);
+  if (!shift) return buf;
+  var outLen = shift > 0 ? Math.max(1, buf.length - shift) : buf.length - shift;
+  var out = actx.createBuffer(buf.numberOfChannels, outLen, buf.sampleRate);
+  var srcStart = shift > 0 ? shift : 0;
+  var dstStart = shift < 0 ? -shift : 0;
+  for (var c = 0; c < buf.numberOfChannels; c++) {
+    var src = buf.getChannelData(c);
+    out.getChannelData(c).set(src.subarray(srcStart, Math.min(src.length, srcStart + outLen - dstStart)), dstStart);
+  }
+  return out;
+}
+
+async function importAudioRecording(blob) {
+  initLive();
+  var buf = await actx.decodeAudioData(await blob.arrayBuffer());
+  if (buf.numberOfChannels === 1) {
+    var mono = buf.getChannelData(0);
+    var stereo = actx.createBuffer(2, buf.length, buf.sampleRate);
+    stereo.copyToChannel(mono, 0);
+    stereo.copyToChannel(mono, 1);
+    buf = stereo;
+  }
+  buf = offsetAudioBuffer(buf, audioInput.latencyMs);
+  loadBuffer(buf);
+  setWorkspace('edit');
+  audioInputStatus('录音已载入剪辑器（延迟校准 ' + audioInput.latencyMs + ' ms）。');
+}
+
+async function startAudioInputRecording() {
+  if (audioInput.recording) return;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    alert('当前环境不支持麦克风录音，请使用最新版 Chrome / Edge 或桌面版。');
+    return;
+  }
+  try {
+    stopAudioInputStream();
+    var deviceId = $('audioInputDevice').value;
+    var constraints = { audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } };
+    if (deviceId) constraints.audio.deviceId = { exact: deviceId };
+    audioInput.stream = await navigator.mediaDevices.getUserMedia(constraints);
+    audioInput.deviceId = deviceId;
+    initLive();
+    if (actx.state === 'suspended') await actx.resume();
+    audioInput.source = actx.createMediaStreamSource(audioInput.stream);
+    audioInput.gain = actx.createGain();
+    audioInput.gain.gain.value = audioInput.gainValue;
+    audioInput.analyser = actx.createAnalyser();
+    audioInput.analyser.fftSize = 2048;
+    audioInput.source.connect(audioInput.gain);
+    audioInput.gain.connect(audioInput.analyser);
+    audioInput.monitorGain = actx.createGain();
+    audioInput.monitorGain.gain.value = $('audioInputMonitor').checked ? 0.8 : 0;
+    audioInput.gain.connect(audioInput.monitorGain);
+    audioInput.monitorGain.connect(actx.destination);
+    var mime = '';
+    ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].some(function (type) {
+      if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type)) { mime = type; return true; }
+      return false;
+    });
+    audioInput.chunks = [];
+    audioInput.recorder = new MediaRecorder(audioInput.stream, mime ? { mimeType: mime } : undefined);
+    audioInput.recorder.ondataavailable = function (e) { if (e.data && e.data.size) audioInput.chunks.push(e.data); };
+    audioInput.recorder.onstop = async function () {
+      var blob = new Blob(audioInput.chunks, { type: audioInput.recorder.mimeType || 'audio/webm' });
+      stopAudioInputStream();
+      try {
+        await importAudioRecording(blob);
+        setPill(state.deviceName || '已连接', 'on');
+      } catch (e) {
+        audioInputStatus('录音载入失败：' + (e.message || e));
+        alert('录音载入失败：' + (e.message || e));
+      }
+    };
+    audioInput.recorder.start(250);
+    audioInput.recording = true;
+    audioInputUpdateUI();
+    audioInputStatus('正在录音，弹奏或播放外部音源后点击停止。');
+    setPill('音频录音中', 'rec');
+    updateAudioInputMeter();
+    refreshAudioInputDevices();
+  } catch (e) {
+    stopAudioInputStream();
+    audioInput.recording = false;
+    audioInputUpdateUI();
+    audioInputStatus('无法打开输入设备：' + (e.message || e));
+    alert('无法打开输入设备：' + (e.message || e) + '\\n请检查浏览器麦克风权限。');
+  }
+}
+
+function stopAudioInputRecording() {
+  if (!audioInput.recording) return;
+  audioInput.recording = false;
+  audioInputUpdateUI();
+  audioInputStatus('正在处理录音…');
+  if (audioInput.recorder && audioInput.recorder.state !== 'inactive') audioInput.recorder.stop();
+}
+
+function setupAudioInput() {
+  if (!$('btnAudioRecord')) return;
+  $('btnAudioRefresh').addEventListener('click', refreshAudioInputDevices);
+  $('btnAudioRecord').addEventListener('click', function () {
+    if (audioInput.recording) stopAudioInputRecording(); else startAudioInputRecording();
+  });
+  $('btnAudioStop').addEventListener('click', stopAudioInputRecording);
+  $('audioInputGain').addEventListener('input', function (e) {
+    audioInput.gainValue = parseInt(e.target.value, 10) / 100;
+    if (audioInput.gain) audioInput.gain.gain.value = audioInput.gainValue;
+    audioInputUpdateUI();
+  });
+  $('audioInputMonitor').addEventListener('change', function (e) {
+    if (audioInput.monitorGain) audioInput.monitorGain.gain.value = e.target.checked ? 0.8 : 0;
+  });
+  $('audioInputLatency').addEventListener('change', function (e) {
+    audioInput.latencyMs = Math.max(-500, Math.min(500, parseInt(e.target.value, 10) || 0));
+    e.target.value = audioInput.latencyMs;
+  });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', refreshAudioInputDevices);
+  }
+  refreshAudioInputDevices();
+  audioInputUpdateUI();
 }
 
 function exportMIDI() {
@@ -5122,6 +5346,7 @@ setupPractice();
 renderMidiTracks();
 setupWorkspaceNav();
 setupDiagnostics();
+setupAudioInput();
 
 (function demo() {
   var q = new URLSearchParams(location.search);
