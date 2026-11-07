@@ -35,9 +35,16 @@ jobs:
         run: |
           $exe = Get-ChildItem dist -Filter 'PianoStudio-Portable-*.exe' | Select-Object -First 1
           if (-not $exe) { throw '未生成 portable exe' }
-          $out = Join-Path $PWD 'smoke.png'
-          & $exe.FullName --smoke "--out=$out" | Tee-Object -Variable log | Out-Host
-          if (-not ($log -match 'SMOKE RESULT=PASS')) { throw '打包后的应用冒烟测试未通过' }
+          $out = Join-Path $PWD 'dist/smoke.png'
+          $res = Join-Path $PWD 'dist/smoke.json'
+          if (Test-Path $res) { Remove-Item $res -Force }
+          # GUI 程序：必须 Start-Process -Wait，且结果以落盘文件为准（stdout 收不到）
+          Start-Process -FilePath $exe.FullName -ArgumentList '--smoke', "--out=$out", "--result=$res" -Wait
+          if (-not (Test-Path $res)) { throw '冒烟测试没有写出结果文件' }
+          Get-Content $res | Out-Host
+          $r = Get-Content $res -Raw | ConvertFrom-Json
+          if ($r.ok -ne $true) { throw "打包后的应用冒烟测试未通过：$($r | ConvertTo-Json -Compress)" }
+          Write-Host '打包后冒烟测试通过'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

@@ -278,12 +278,29 @@ async function runSmoke(win, outPath) {
     }
   }
 
+  const ok = /^SELFTEST 75\/75$/.test(title) && bt === 'object' && secure === true;
+
+  // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数
+  const resultPath = argOf('result');
+  if (resultPath) {
+    try {
+      fs.writeFileSync(resultPath, JSON.stringify({
+        ok,
+        title,
+        bluetooth: bt,
+        secureContext: secure,
+        audioContext: tone,
+        electron: process.versions.electron
+      }, null, 2));
+    } catch (e) {
+      console.error('结果文件写入失败：' + e.message);
+    }
+  }
+
   console.log('SMOKE title=' + title);
   console.log('SMOKE bluetooth=' + bt);
   console.log('SMOKE secureContext=' + secure);
   console.log('SMOKE audiocontext=' + tone);
-
-  const ok = /^SELFTEST 75\/75$/.test(title) && bt === 'object' && secure === true;
   console.log(ok ? 'SMOKE RESULT=PASS' : 'SMOKE RESULT=FAIL');
   return ok ? 0 : 1;
 }
