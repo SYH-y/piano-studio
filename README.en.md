@@ -88,6 +88,7 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 - 44 local FluidR3_GM piano samples (A0–C8, every semitone), fully offline
 - Real-time convolution reverb, bus limiter
 - Export **MIDI**, **WAV** (44.1 kHz / 16 bit), **MP3** (128 kbps, encoded in-browser)
+- Import standard MIDI files, select one or more tracks, and export staff or numbered notation as PNG or printable PDF with a title and author
 
 ### Timeline editor
 - Multi-clip model: split, drag, trim both ends, delete, leave gaps and overlap
