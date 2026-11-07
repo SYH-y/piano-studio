@@ -289,6 +289,34 @@
       <label class="checkbox"><input type="checkbox" id="monitor"> 边弹边听</label>
     </div>
 
+    <div class="card audio-input-card" data-workspace="performance project">
+      <h3>音频输入<span class="sub">麦克风 · 线路 · 延迟校准</span></h3>
+      <div class="field">
+        <label>输入设备</label>
+        <select id="audioInputDevice"><option value="">默认输入设备</option></select>
+      </div>
+      <div class="export-row audio-input-actions">
+        <button class="btn" id="btnAudioRefresh">刷新设备</button>
+        <button class="btn primary" id="btnAudioRecord">开始录音</button>
+        <button class="btn full" id="btnAudioStop" disabled>停止并载入剪辑</button>
+      </div>
+      <div class="audio-meter-wrap">
+        <div class="audio-meter"><i id="audioInputLevel"></i></div>
+        <span id="audioInputPeak">峰值 —</span>
+        <b id="audioInputClip">未削波</b>
+      </div>
+      <div class="field">
+        <label>输入增益 <b id="audioInputGainVal">100%</b></label>
+        <input type="range" id="audioInputGain" min="0" max="200" value="100">
+      </div>
+      <label class="checkbox"><input type="checkbox" id="audioInputMonitor"> 监听输入（耳机推荐）</label>
+      <div class="field audio-latency-field">
+        <label>延迟校准 <b>毫秒</b></label>
+        <input type="number" id="audioInputLatency" min="-500" max="500" step="1" value="0">
+      </div>
+      <p class="hint" id="audioInputStatus">选择麦克风或声卡线路输入后，可以把真实声音录入剪辑器。</p>
+    </div>
+
     <div class="card project-export-card" data-workspace="project">
       <h3>导出</h3>
       <div class="export-row">
