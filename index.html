@@ -232,6 +232,18 @@
       <p class="hint" id="practiceHint">录完一段后选择起止时间，软件会按当前速度循环播放这一段。</p>
     </div>
 
+    <div class="card midi-card">
+      <h3>MIDI 文件<span class="sub">导入多轨 · 选择声部 · 继续编辑</span></h3>
+      <div class="export-row">
+        <button class="btn" id="btnMidiImport">导入 MIDI</button>
+        <button class="btn" id="btnMidiLoad" disabled>载入所选轨道</button>
+        <button class="btn full" id="btnMidiClear" disabled>清空轨道列表</button>
+      </div>
+      <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi,audio/x-midi" style="display:none">
+      <p class="hint" id="midiImportSummary">支持标准 MIDI 文件（.mid / .midi）。导入后可以选择一条或多条轨道载入卷帘。</p>
+      <div class="midi-track-list" id="midiTrackList"></div>
+    </div>
+
     <div class="card">
       <h3>音色与混音</h3>
       <button class="btn wide" id="btnSamples" style="margin-bottom:12px;">加载真实钢琴采样</button>
@@ -290,6 +302,7 @@
       <li><b>录音</b>　点「开始录音」，默认走四拍预备。想跟节拍器就勾上右侧开关，拍号可以设 4/4、3/4、2/4、6/8。</li>
       <li><b>出谱</b>　五线谱和简谱会边弹边长。BPM 是自动估的，不准就拖滑块调，再点「重新排版」。</li>
       <li><b>练习</b>　录完后在右侧「练习中心」设置起止时间、速度和左右手，按「开始练习」循环跟弹。</li>
+      <li><b>MIDI</b>　需要练习现成曲子时，导入 `.mid` 文件，选择一条或多条轨道，再载入卷帘继续编辑。</li>
       <li><b>导出</b>　MIDI 是可编辑的演奏数据，换音源能重新发声；WAV / MP3 是当前页面合成好的成品。</li>
       <li><b>剪</b>　到「音频剪辑」点「载入录音」，或直接把 mp3 / wav 拖进窗口，然后分割、拖动、裁剪。</li>
     </ol>
