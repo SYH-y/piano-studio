@@ -2398,6 +2398,99 @@ function clearMidiImport() {
   renderMidiTracks();
 }
 
+/* ============================================================
+   工作区导航与设备诊断
+   ============================================================ */
+var currentWorkspace = 'performance';
+
+function setWorkspace(name) {
+  currentWorkspace = name;
+  document.querySelectorAll('[data-workspace]').forEach(function (el) {
+    if (el.classList.contains('workspace-tab')) return;
+    var groups = (el.getAttribute('data-workspace') || '').split(/\s+/);
+    el.classList.toggle('workspace-hidden', groups.indexOf(name) < 0);
+  });
+  document.querySelectorAll('.workspace-tab').forEach(function (tab) {
+    var active = tab.getAttribute('data-workspace') === name;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.body.setAttribute('data-workspace', name);
+  if (name === 'edit') {
+    setTimeout(function () { fitWave(); fitOverview(); }, 30);
+  }
+}
+
+function setupWorkspaceNav() {
+  document.querySelectorAll('.workspace-tab').forEach(function (tab) {
+    tab.addEventListener('click', function () { setWorkspace(tab.getAttribute('data-workspace')); });
+  });
+  setWorkspace('performance');
+}
+
+function diagnosticRow(label, detail, status) {
+  var row = document.createElement('div');
+  row.className = 'diagnostic-row';
+  var dot = document.createElement('i');
+  dot.className = 'diagnostic-dot ' + status;
+  var copy = document.createElement('div');
+  copy.className = 'diagnostic-copy';
+  var b = document.createElement('b');
+  b.textContent = label;
+  var span = document.createElement('span');
+  span.textContent = detail;
+  copy.appendChild(b);
+  copy.appendChild(span);
+  row.appendChild(dot);
+  row.appendChild(copy);
+  return row;
+}
+
+async function runDiagnostics() {
+  var host = $('diagnosticList');
+  if (!host) return;
+  host.textContent = '';
+  var rows = [];
+  var secure = window.isSecureContext === true;
+  rows.push(diagnosticRow('安全上下文', secure ? '当前地址允许访问硬件 API。' : '请使用 HTTPS、localhost 或桌面版。', secure ? 'ok' : 'bad'));
+  var ble = typeof navigator.bluetooth === 'object';
+  rows.push(diagnosticRow('蓝牙 BLE-MIDI', ble ? '浏览器支持蓝牙；点击顶部“连接钢琴”开始授权。' : '当前环境没有 Web Bluetooth。', ble ? 'ok' : 'bad'));
+  if (ble && typeof navigator.bluetooth.getAvailability === 'function') {
+    try {
+      var available = await navigator.bluetooth.getAvailability();
+      rows.push(diagnosticRow('蓝牙开关', available ? '系统报告蓝牙可用。' : '系统报告蓝牙不可用，请打开蓝牙。', available ? 'ok' : 'warn'));
+    } catch (e) {
+      rows.push(diagnosticRow('蓝牙开关', '无法读取系统蓝牙状态，可以继续尝试连接。', 'warn'));
+    }
+  }
+  var midi = typeof navigator.requestMIDIAccess === 'function';
+  if (!midi) {
+    rows.push(diagnosticRow('USB-MIDI', '当前浏览器不支持 Web MIDI。', 'bad'));
+  } else if (webMidi.access) {
+    rows.push(diagnosticRow('USB-MIDI', '已获得权限，发现 ' + webMidi.access.inputs.size + ' 个输入端口。', webMidi.access.inputs.size ? 'ok' : 'warn'));
+  } else {
+    rows.push(diagnosticRow('USB-MIDI', '浏览器支持，尚未请求端口权限；点击顶部“USB”开始扫描。', 'warn'));
+  }
+  var audio = typeof (window.AudioContext || window.webkitAudioContext) === 'function';
+  rows.push(diagnosticRow('音频引擎', audio ? 'Web Audio 可用，可以监听和播放。' : '当前环境不支持 Web Audio。', audio ? 'ok' : 'bad'));
+  rows.push(diagnosticRow('当前连接', state.connected ? (state.transport === 'usb' ? 'USB · ' : '蓝牙 · ') + (state.deviceName || '已连接') : '尚未连接钢琴。', state.connected ? 'ok' : 'warn'));
+  rows.forEach(function (row) { host.appendChild(row); });
+}
+
+function setupDiagnostics() {
+  var mask = $('diagnosticMask');
+  if (!mask) return;
+  function open() { mask.classList.add('show'); runDiagnostics(); }
+  function close() { mask.classList.remove('show'); }
+  $('btnDiagnostics').addEventListener('click', open);
+  $('btnDiagnosticRefresh').addEventListener('click', runDiagnostics);
+  $('btnDiagnosticClose').addEventListener('click', close);
+  mask.addEventListener('click', function (e) { if (e.target === mask) close(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && mask.classList.contains('show')) close();
+  });
+}
+
 function exportMIDI() {
   var notes = state.notes.filter(function (n) { return n.tOff !== null; });
   if (!notes.length) return;
@@ -3855,6 +3948,12 @@ function onWaveUp() {
 
 /* ---------- 自检 ---------- */
 function runSelfTest() {
+  document.querySelectorAll('[data-workspace]').forEach(function (el) {
+    if (!el.classList.contains('workspace-tab')) el.classList.remove('workspace-hidden');
+  });
+  fitRoll();
+  fitWave();
+  fitOverview();
   var out = [];
   function ok(name, cond, extra) {
     out.push((cond ? 'PASS|' : 'FAIL|') + name + (extra ? '|' + extra : ''));
@@ -5015,6 +5114,8 @@ fitOverview();
 setupNoteEditor();
 setupPractice();
 renderMidiTracks();
+setupWorkspaceNav();
+setupDiagnostics();
 
 (function demo() {
   var q = new URLSearchParams(location.search);
