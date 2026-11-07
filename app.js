@@ -2018,6 +2018,7 @@ function renderAll() {
   renderJianpu();
   updateMini();
   updateNoteTools();
+  updateScoreExportButtons();
 }
 
 /* ============================================================
@@ -2038,6 +2039,99 @@ function download(blob, name) {
   a.click();
   setTimeout(function () { URL.revokeObjectURL(url); a.remove(); }, 1500);
 }
+
+function scoreXmlEscape(value) {
+  return String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function scoreExportName(value) {
+  return String(value || 'piano_score').replace(/[\\/:*"<>|]+/g, '_').trim() || 'piano_score';
+}
+
+function scoreCssText() {
+  var out = '';
+  for (var i = 0; i < document.styleSheets.length; i++) {
+    try {
+      var rules = document.styleSheets[i].cssRules || [];
+      for (var j = 0; j < rules.length; j++) out += rules[j].cssText + '\\n';
+    } catch (e) {}
+  }
+  return out;
+}
+
+function exportScoreHostPng(hostId, suffix) {
+  var host = $(hostId);
+  if (!host || !state.notes.length || host.querySelector('.empty')) {
+    alert('还没有可导出的谱面。先录一段或载入 MIDI。');
+    return;
+  }
+  var rect = host.getBoundingClientRect();
+  var width = Math.max(640, Math.ceil(host.scrollWidth || rect.width || 640));
+  var height = Math.max(180, Math.ceil(host.scrollHeight || rect.height || 180));
+  var title = $('scoreTitle').value.trim() || 'PIANO STUDIO 乐谱';
+  var author = $('scoreAuthor').value.trim();
+  var top = 58;
+  var clone = host.cloneNode(true);
+  clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  clone.style.width = width + 'px';
+  clone.style.height = height + 'px';
+  var serialized = new XMLSerializer().serializeToString(clone);
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="' + width + '" height="' + (height + top) + '">' +
+    '<style>' + scoreCssText() + '</style>' +
+    '<rect width="100%" height="100%" fill="#ffffff"/>' +
+    '<text x="24" y="26" font-family="system-ui, sans-serif" font-size="18" font-weight="600" fill="#1e2925">' + scoreXmlEscape(title) + '</text>' +
+    (author ? '<text x="24" y="46" font-family="system-ui, sans-serif" font-size="11" fill="#66716b">' + scoreXmlEscape(author) + '</text>' : '') +
+    '<foreignObject x="0" y="' + top + '" width="' + width + '" height="' + height + '">' + serialized + '</foreignObject></svg>';
+  var url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }));
+  var img = new Image();
+  img.onload = function () {
+    var scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil((height + top) * scale);
+    var ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, width, height + top);
+    URL.revokeObjectURL(url);
+    canvas.toBlob(function (blob) {
+      if (blob) download(blob, scoreExportName(title) + '_' + suffix + '.png');
+    }, 'image/png');
+  };
+  img.onerror = function () {
+    URL.revokeObjectURL(url);
+    alert('谱面图片生成失败，请改用“打印 / 保存 PDF”。');
+  };
+  img.src = url;
+}
+
+function updatePrintHeading() {
+  var title = $('scoreTitle') ? $('scoreTitle').value.trim() : '';
+  var author = $('scoreAuthor') ? $('scoreAuthor').value.trim() : '';
+  $('printHeadingTitle').textContent = title || 'PIANO STUDIO 乐谱';
+  $('printHeadingAuthor').textContent = author;
+}
+
+function updateScoreExportButtons() {
+  var ready = !!state.notes.length && !!score;
+  ['btnStaffPng', 'btnJianpuPng', 'btnPrintScore'].forEach(function (id) {
+    if ($(id)) $(id).disabled = !ready;
+  });
+  updatePrintHeading();
+}
+
+function printScore() {
+  if (!state.notes.length || !score) {
+    alert('还没有可打印的谱面。先录一段或载入 MIDI。');
+    return;
+  }
+  updatePrintHeading();
+  document.body.classList.add('printing-score');
+  setTimeout(function () { window.print(); }, 50);
+}
+
+window.addEventListener('afterprint', function () {
+  document.body.classList.remove('printing-score');
+});
 
 function varlen(n) {
   var out = [n & 0x7F];
@@ -4782,6 +4876,11 @@ $('btnStop').addEventListener('click', function () {
 $('btnMidi').addEventListener('click', exportMIDI);
 $('btnWav').addEventListener('click', exportWav);
 $('btnMp3').addEventListener('click', exportMp3);
+$('btnStaffPng').addEventListener('click', function () { exportScoreHostPng('staffHost', '五线谱'); });
+$('btnJianpuPng').addEventListener('click', function () { exportScoreHostPng('jianpuHost', '简谱'); });
+$('btnPrintScore').addEventListener('click', printScore);
+$('scoreTitle').addEventListener('input', updatePrintHeading);
+$('scoreAuthor').addEventListener('input', updatePrintHeading);
 $('btnSamples').addEventListener('click', loadSamples);
 
 $('btnRebuild').addEventListener('click', function () {
