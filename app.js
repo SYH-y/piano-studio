@@ -1020,6 +1020,7 @@ function practiceStartCycle() {
 
 function practiceHandleNote(pitch) {
   if (!practice.active || !practiceMatchesHand(pitch)) return;
+  var scale = 100 / practice.speed;
   var elapsed = (performance.now() - practice.cycleStartedAt) / 1000;
   var best = null, bestDiff = Infinity;
   practice.expected.forEach(function (e) {
@@ -1027,7 +1028,7 @@ function practiceHandleNote(pitch) {
     var diff = Math.abs(e.at - elapsed);
     if (diff < bestDiff) { best = e; bestDiff = diff; }
   });
-  var tolerance = Math.max(0.18, 0.24 * (100 / practice.speed));
+  var tolerance = Math.max(0.18, 0.24 * scale);
   if (best && bestDiff <= tolerance) {
     best.hit = true;
     practice.hits++;
@@ -2045,7 +2046,7 @@ function scoreXmlEscape(value) {
 }
 
 function scoreExportName(value) {
-  return String(value || 'piano_score').replace(/[\\/:*"<>|]+/g, '_').trim() || 'piano_score';
+  return String(value || 'piano_score').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'piano_score';
 }
 
 function scoreCssText() {
@@ -2053,7 +2054,7 @@ function scoreCssText() {
   for (var i = 0; i < document.styleSheets.length; i++) {
     try {
       var rules = document.styleSheets[i].cssRules || [];
-      for (var j = 0; j < rules.length; j++) out += rules[j].cssText + '\\n';
+      for (var j = 0; j < rules.length; j++) out += rules[j].cssText + '\n';
     } catch (e) {}
   }
   return out;
@@ -2149,7 +2150,7 @@ function parseMidiData(input) {
   function text(data) {
     var out = '';
     for (var i = 0; i < data.length; i++) out += data[i] >= 32 ? String.fromCharCode(data[i]) : ' ';
-    return out.replace(/\\s+/g, ' ').trim();
+    return out.replace(/\s+/g, ' ').trim();
   }
   function vlq(at) {
     var value = 0, count = 0, b;
@@ -2230,7 +2231,7 @@ function parseMidiData(input) {
         var stack = pending[offKey];
         if (stack && stack.length) {
           var on = stack.pop();
-          notes.push({ pitch: a, vel: on.vel, channel: on.channel, tOnTick: on.tOnTick, tOffTick: Math.max(tick, on.tOnTick + 1) });
+          notes.push({ pitch: on.pitch, vel: on.vel, channel: on.channel, tOnTick: on.tOnTick, tOffTick: Math.max(tick, on.tOnTick + 1) });
         }
       } else if (kind === 0xB0) {
         ccs.push({ cc: a, value: b, channel: channel, tick: tick });
