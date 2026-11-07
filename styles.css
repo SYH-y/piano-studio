@@ -165,6 +165,32 @@
   .foot a:hover{color:var(--accent); border-color:var(--accent-line);}
   .foot .dot{color:#d5d4cc;}
 
+  .workspace-nav{
+    position:sticky; top:59px; z-index:15; display:flex; gap:4px;
+    max-width:1480px; margin:0 auto; padding:8px 22px;
+    background:rgba(244,245,242,.92); backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line2); overflow-x:auto; scrollbar-width:none;
+  }
+  .workspace-nav::-webkit-scrollbar{display:none;}
+  .workspace-tab{
+    flex:0 0 auto; border:1px solid transparent; background:transparent; color:var(--muted);
+    padding:7px 18px; border-radius:8px; cursor:pointer; font-size:13px; transition:background .14s,color .14s,border-color .14s;
+  }
+  .workspace-tab:hover{background:#fff; color:var(--ink);}
+  .workspace-tab.active{background:#fff; border-color:var(--line); color:var(--accent); box-shadow:0 2px 5px rgba(29,49,41,.06); font-weight:600;}
+  [data-workspace].workspace-hidden{display:none !important;}
+
+  .diagnostic-list{display:flex; flex-direction:column; gap:7px; margin-top:14px;}
+  .diagnostic-row{display:flex; align-items:center; gap:10px; padding:9px 10px; border:1px solid var(--line2); border-radius:9px; background:#fafaf7;}
+  .diagnostic-dot{width:9px; height:9px; flex:0 0 auto; border-radius:50%; background:var(--faint);}
+  .diagnostic-dot.ok{background:var(--accent);}
+  .diagnostic-dot.warn{background:var(--gold);}
+  .diagnostic-dot.bad{background:var(--red);}
+  .diagnostic-copy{display:flex; flex-direction:column; min-width:0;}
+  .diagnostic-copy b{font-size:13px; font-weight:600;}
+  .diagnostic-copy span{font-size:11px; color:var(--muted); line-height:1.45;}
+  .diagnostic-modal{max-width:560px;}
+
   .layout{
     max-width:1480px; margin:0 auto; padding:20px 22px 40px;
     display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start;
@@ -395,6 +421,8 @@
   .edit-status{display:flex; flex-wrap:wrap; gap:22px; margin-top:10px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
   .edit-status b{color:var(--ink); font-weight:500;}
   @media(max-width:720px){
+    .workspace-nav{top:106px; padding:7px 12px;}
+    .workspace-tab{padding:7px 14px;}
     .topbar{
       min-height:58px; height:auto; flex-wrap:wrap;
       padding:9px 12px; gap:7px 8px;
