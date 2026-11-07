@@ -309,6 +309,38 @@
   .midi-track-info span{font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .midi-track-empty{padding:10px 2px; color:var(--faint); font-size:12px;}
 
+  .score-export-card input[type=text]{
+    width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:7px;
+    background:#fbfbf9; color:var(--ink); font-size:13px;
+  }
+  .score-export-card .field{margin-bottom:10px;}
+  #printHeading{display:none;}
+
+  @media print{
+    @page{size:auto; margin:14mm;}
+    body.printing-score{background:#fff; color:#111;}
+    body.printing-score .topbar,
+    body.printing-score .restore-bar,
+    body.printing-score .mini-bar,
+    body.printing-score .foot,
+    body.printing-score aside,
+    body.printing-score .transport-card,
+    body.printing-score .keyboard-card,
+    body.printing-score .roll-card,
+    body.printing-score .audio-card{display:none !important;}
+    body.printing-score .layout{display:block; max-width:none; margin:0; padding:0;}
+    body.printing-score .layout > section{display:block;}
+    body.printing-score #printHeading{display:block; margin:0 0 12mm; text-align:center;}
+    body.printing-score #printHeading h1{margin:0; font-size:22px; font-weight:600;}
+    body.printing-score #printHeading p{margin:3px 0 0; color:#555; font-size:12px;}
+    body.printing-score .score-card{display:block !important; margin:0 0 10mm; padding:0; border:0; box-shadow:none;}
+    body.printing-score .score-card .card-head{margin-bottom:5mm; font-size:15px;}
+    body.printing-score .score-card .card-head .sub{display:none;}
+    body.printing-score #staffHost,
+    body.printing-score #jianpuHost{overflow:visible; min-height:0;}
+    body.printing-score #staffHost svg{max-width:100%; height:auto;}
+  }
+
   .export-row{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
   .export-row .btn{width:100%; padding:9px 0;}
 
