@@ -191,6 +191,19 @@
   .diagnostic-copy span{font-size:11px; color:var(--muted); line-height:1.45;}
   .diagnostic-modal{max-width:560px;}
 
+  .audio-input-actions{margin:10px 0 12px;}
+  .audio-input-actions .btn{padding:8px 6px;}
+  .audio-meter-wrap{display:flex; align-items:center; gap:8px; margin:8px 0 12px; font-size:11px; color:var(--muted);}
+  .audio-meter{height:10px; flex:1; overflow:hidden; border-radius:999px; background:#eef2ef; border:1px solid var(--line2);}
+  .audio-meter i{display:block; width:0; height:100%; border-radius:inherit; background:var(--accent); transition:width .08s linear,background .12s;}
+  .audio-meter i.hot{background:var(--gold);}
+  .audio-meter i.clip{background:var(--red);}
+  #audioInputClip{font-weight:500; color:var(--accent); min-width:42px; text-align:right;}
+  #audioInputClip.clip{color:var(--red);}
+  .audio-latency-field{display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px;}
+  .audio-latency-field label{margin:0; flex:1;}
+  .audio-latency-field input{width:88px; padding:5px 7px; border:1px solid var(--line); border-radius:7px; background:#fbfbf9; color:var(--ink); font-size:12px;}
+
   .layout{
     max-width:1480px; margin:0 auto; padding:20px 22px 40px;
     display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start;
