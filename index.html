@@ -69,7 +69,22 @@
     </div>
 
     <div class="card">
-      <div class="card-head">钢琴卷帘<span class="sub">音符随时间的分布，颜色深浅对应力度</span></div>
+      <div class="card-head">钢琴卷帘<span class="sub">点选音符可编辑：拖动移动、上下改音高、拖右端改时值</span></div>
+      <div class="note-tools">
+        <span class="note-sel" id="noteSel">没有音符可编辑</span>
+        <label class="note-vel">力度 <input type="range" id="noteVel" min="1" max="127" value="96" disabled><b id="noteVelVal">—</b></label>
+        <span class="sep"></span>
+        <button class="btn" id="noteDown">−半音</button>
+        <button class="btn" id="noteUp">+半音</button>
+        <button class="btn" id="noteOctDown">−八度</button>
+        <button class="btn" id="noteOctUp">+八度</button>
+        <span class="sep"></span>
+        <button class="btn" id="noteQuant">量化</button>
+        <button class="btn" id="noteDel" disabled>删除</button>
+        <span class="sep"></span>
+        <button class="btn" id="noteUndo" disabled>撤销</button>
+        <button class="btn" id="noteRedo" disabled>重做</button>
+      </div>
       <canvas id="roll"></canvas>
     </div>
 
@@ -255,7 +270,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.1.0</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.2.0</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>

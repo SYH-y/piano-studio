@@ -747,6 +747,11 @@ function startRecNow() {
   state.pending = {};
   state.ccs = [];
   state.lastDur = 0;
+  noteEdit.selected = -1;
+  noteEdit.undo = [];
+  noteEdit.redo = [];
+  noteEdit.drag = null;
+  velDragStart = null;
   state.recording = true;
   state.bpmAuto = true;
   state.t0 = performance.now();
@@ -884,25 +889,15 @@ function fitRoll() {
   rctx = roll.getContext('2d');
   var dpr = window.devicePixelRatio || 1;
   roll.width = Math.floor(roll.clientWidth * dpr);
-  roll.height = Math.floor(230 * dpr);
+  roll.height = Math.floor(roll.clientHeight * dpr);
   rctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   drawRoll();
 }
 
-function drawRoll() {
-  if (!rctx) return;
-  var w = roll.clientWidth, h = 230;
-  rctx.clearRect(0, 0, w, h);
-
+// 卷帘布局几何：drawRoll 与命中检测共用同一套坐标，避免两处算法漂移
+function rollGeometry() {
+  var w = roll.clientWidth, h = roll.clientHeight;
   var top = 22, drawH = h - top - 10;
-
-  if (!state.notes.length && !state.recording) {
-    rctx.fillStyle = '#b6b5ad';
-    rctx.font = '13px system-ui, sans-serif';
-    rctx.fillText('录一段，这里会显示音符', 14, h / 2);
-    return;
-  }
-
   var allNotes = state.notes.concat(Object.keys(state.pending).map(function (k) { return state.pending[k]; }));
   var lo = 108, hi = 21;
   allNotes.forEach(function (n) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; });
@@ -915,60 +910,322 @@ function drawRoll() {
   }
   var span = hi - lo + 1;
   var rowH = drawH / span;
+  var elapsed = state.recording ? (performance.now() - state.t0) / 1000 : state.lastDur;
+  var maxEnd = 0;
+  state.notes.forEach(function (n) { if (n.tOff && n.tOff / 1000 > maxEnd) maxEnd = n.tOff / 1000; });
+  if (maxEnd > elapsed) elapsed = maxEnd;
+  var tMax = Math.max(3, elapsed);
+  return { w: w, h: h, top: top, drawH: drawH, lo: lo, hi: hi, span: span, rowH: rowH, elapsed: elapsed, tMax: tMax };
+}
+
+function noteRect(n, geo) {
+  var t0 = n.tOn / 1000;
+  var t1 = n.tOff !== null ? n.tOff / 1000 : geo.elapsed;
+  var x0 = (t0 / geo.tMax) * geo.w;
+  var x1 = (t1 / geo.tMax) * geo.w;
+  var y = geo.top + geo.drawH - (n.pitch - geo.lo + 1) * geo.rowH;
+  return { x0: x0, x1: x1, y: y, hh: Math.max(3, geo.rowH - 0.6) };
+}
+
+function drawRoll() {
+  if (!rctx) return;
+  var geo = rollGeometry();
+  rctx.clearRect(0, 0, geo.w, geo.h);
+
+  if (!state.notes.length && !state.recording) {
+    rctx.fillStyle = '#b6b5ad';
+    rctx.font = '13px system-ui, sans-serif';
+    rctx.fillText('录一段，这里会显示音符（点击可编辑）', 14, geo.h / 2);
+    return;
+  }
 
   rctx.strokeStyle = '#eeede7';
   rctx.lineWidth = 1;
-  for (var p = lo; p <= hi; p++) {
+  for (var p = geo.lo; p <= geo.hi; p++) {
     if (p % 12 === 0) {
-      var y = top + drawH - (p - lo + 1) * rowH;
+      var gy = geo.top + geo.drawH - (p - geo.lo + 1) * geo.rowH;
       rctx.beginPath();
-      rctx.moveTo(0, Math.round(y) + 0.5);
-      rctx.lineTo(w, Math.round(y) + 0.5);
+      rctx.moveTo(0, Math.round(gy) + 0.5);
+      rctx.lineTo(geo.w, Math.round(gy) + 0.5);
       rctx.stroke();
     }
   }
 
-  var elapsed = state.recording ? (performance.now() - state.t0) / 1000 : state.lastDur;
-  var tMax = Math.max(3, elapsed);
-
   rctx.fillStyle = '#b6b5ad';
   rctx.font = '11px system-ui, sans-serif';
   rctx.strokeStyle = '#e6e5de';
-  for (var s = 0; s <= Math.ceil(tMax); s++) {
-    var x = (s / tMax) * w;
+  for (var s = 0; s <= Math.ceil(geo.tMax); s++) {
+    var sx = (s / geo.tMax) * geo.w;
     rctx.beginPath();
-    rctx.moveTo(Math.round(x) + 0.5, top - 6);
-    rctx.lineTo(Math.round(x) + 0.5, h);
+    rctx.moveTo(Math.round(sx) + 0.5, geo.top - 6);
+    rctx.lineTo(Math.round(sx) + 0.5, geo.h);
     rctx.stroke();
-    if (s % Math.max(1, Math.ceil(tMax / 8)) === 0) {
-      rctx.fillText(s + 's', x + 3, 12);
+    if (s % Math.max(1, Math.ceil(geo.tMax / 8)) === 0) {
+      rctx.fillText(s + 's', sx + 3, 12);
     }
   }
 
-  var all = allNotes;
-  all.forEach(function (n) {
-    var t0 = n.tOn / 1000;
-    var t1 = n.tOff !== null ? n.tOff / 1000 : elapsed;
-    var x0 = (t0 / tMax) * w;
-    var ww = Math.max(2, ((t1 - t0) / tMax) * w);
-    var y = top + drawH - (n.pitch - lo + 1) * rowH;
+  state.notes.forEach(function (n, i) {
+    var r = noteRect(n, geo);
     var v = n.vel / 127;
-    rctx.fillStyle = 'rgba(15,110,86,' + (0.2 + v * 0.75).toFixed(2) + ')';
-    rctx.fillRect(x0, y, ww, Math.max(3, rowH - 0.6));
+    var selected = i === noteEdit.selected;
+    rctx.fillStyle = selected ? '#0f6e56' : ('rgba(15,110,86,' + (0.2 + v * 0.75).toFixed(2) + ')');
+    rctx.fillRect(r.x0, r.y, Math.max(2, r.x1 - r.x0), r.hh);
+    if (selected) {
+      rctx.strokeStyle = '#0a4f3c';
+      rctx.lineWidth = 1.5;
+      rctx.strokeRect(r.x0 + 0.5, r.y + 0.5, Math.max(2, r.x1 - r.x0) - 1, r.hh - 1);
+      rctx.fillStyle = '#0a4f3c';
+      rctx.fillRect(r.x1 - 2.5, r.y, 5, r.hh);
+    }
   });
 
   if (state.playing && actx) {
     var now = actx.currentTime - state.playStart;
     if (now >= 0) {
-      var px = (now / tMax) * w;
+      var px = (now / geo.tMax) * geo.w;
       rctx.strokeStyle = '#c2453f';
       rctx.lineWidth = 1.5;
       rctx.beginPath();
-      rctx.moveTo(px, top - 6);
-      rctx.lineTo(px, h);
+      rctx.moveTo(px, geo.top - 6);
+      rctx.lineTo(px, geo.h);
       rctx.stroke();
     }
   }
+}
+
+/* ============================================================
+   MIDI 音符编辑器
+   ============================================================ */
+var noteEdit = { selected: -1, undo: [], redo: [], drag: null };
+var velDragStart = null;
+
+function noteNameOf(p) {
+  return SHARP[p % 12] + (Math.floor(p / 12) - 1);
+}
+
+function noteSnapshot() {
+  return state.notes.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
+}
+
+function noteRestore(snap) {
+  state.notes = snap.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
+}
+
+function selectedNoteRef() {
+  return noteEdit.selected >= 0 && noteEdit.selected < state.notes.length ? state.notes[noteEdit.selected] : null;
+}
+
+function afterNoteEdit() {
+  buildScore();
+  renderAll();
+  $('mNotes').textContent = state.notes.length;
+  scheduleSave();
+  updateNoteTools();
+}
+
+function updateNoteTools() {
+  var sel = selectedNoteRef();
+  var info = $('noteSel'), vel = $('noteVel'), velVal = $('noteVelVal');
+  if (sel) {
+    var dur = (sel.tOff - sel.tOn) / 1000;
+    info.textContent = noteNameOf(sel.pitch) + ' · 力度 ' + sel.vel + ' · 起 ' + (sel.tOn / 1000).toFixed(2) + 's · 长 ' + dur.toFixed(2) + 's';
+    vel.disabled = false;
+    vel.value = sel.vel;
+    velVal.textContent = sel.vel;
+    $('noteDel').disabled = false;
+  } else {
+    info.textContent = state.notes.length ? '未选中（点卷帘里的音符）' : '没有音符可编辑';
+    vel.disabled = true;
+    velVal.textContent = '—';
+    $('noteDel').disabled = true;
+  }
+  $('noteUndo').disabled = !noteEdit.undo.length;
+  $('noteRedo').disabled = !noteEdit.redo.length;
+  var any = state.notes.length > 0;
+  ['noteDown', 'noteUp', 'noteOctDown', 'noteOctUp', 'noteQuant'].forEach(function (id) { $(id).disabled = !any; });
+}
+
+function notePushUndo(snap) {
+  noteEdit.undo.push(snap || noteSnapshot());
+  if (noteEdit.undo.length > 50) noteEdit.undo.shift();
+  noteEdit.redo.length = 0;
+  updateNoteTools();
+}
+
+function noteUndo() {
+  if (!noteEdit.undo.length) return;
+  noteEdit.redo.push(noteSnapshot());
+  noteRestore(noteEdit.undo.pop());
+  noteEdit.selected = -1;
+  afterNoteEdit();
+}
+
+function noteRedo() {
+  if (!noteEdit.redo.length) return;
+  noteEdit.undo.push(noteSnapshot());
+  noteRestore(noteEdit.redo.pop());
+  noteEdit.selected = -1;
+  afterNoteEdit();
+}
+
+function selectNote(idx) {
+  if (idx >= 0 && idx >= state.notes.length) idx = -1;
+  noteEdit.selected = idx;
+  velDragStart = null;
+  updateNoteTools();
+  drawRoll();
+}
+
+function deleteSelectedNote() {
+  if (noteEdit.selected < 0) return;
+  notePushUndo();
+  state.notes.splice(noteEdit.selected, 1);
+  noteEdit.selected = -1;
+  afterNoteEdit();
+}
+
+function transposeNotes(semitones) {
+  var sel = selectedNoteRef();
+  var targets = sel ? [sel] : state.notes;
+  var any = false;
+  for (var i = 0; i < targets.length; i++) {
+    var np = targets[i].pitch + semitones;
+    if (np >= KEY_LOW && np <= KEY_HIGH) { any = true; break; }
+  }
+  if (!any) return;
+  notePushUndo();
+  for (var j = 0; j < targets.length; j++) {
+    var npp = targets[j].pitch + semitones;
+    if (npp >= KEY_LOW && npp <= KEY_HIGH) targets[j].pitch = npp;
+  }
+  afterNoteEdit();
+}
+
+function quantizeNotes() {
+  if (!state.notes.length) return;
+  notePushUndo();
+  var spb = 60 / state.bpm;
+  var gb = 1 / state.gridDiv;
+  state.notes.forEach(function (n) {
+    var s = Math.round((n.tOn / 1000 / spb) / gb) * gb;
+    var e = Math.round((n.tOff / 1000 / spb) / gb) * gb;
+    if (e <= s) e = s + gb;
+    n.tOn = s * spb * 1000;
+    n.tOff = e * spb * 1000;
+  });
+  afterNoteEdit();
+}
+
+function hitTestNote(x, y) {
+  var geo = rollGeometry();
+  for (var i = state.notes.length - 1; i >= 0; i--) {
+    var r = noteRect(state.notes[i], geo);
+    if (y < r.y || y > r.y + r.hh) continue;
+    if (x >= r.x1 - 8 && x <= r.x1 + 3) return { idx: i, mode: 'resize' };
+    if (x >= r.x0 && x <= r.x1) return { idx: i, mode: 'move' };
+  }
+  return null;
+}
+
+function rollMousePos(e) {
+  var rect = roll.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function setupNoteEditor() {
+  roll.addEventListener('mousedown', function (e) {
+    if (state.recording) return;
+    var pos = rollMousePos(e);
+    var hit = hitTestNote(pos.x, pos.y);
+    if (!hit) { selectNote(-1); return; }
+    selectNote(hit.idx);
+    var n = state.notes[hit.idx];
+    noteEdit.drag = {
+      mode: hit.mode, idx: hit.idx,
+      startX: pos.x, startY: pos.y,
+      orig: { pitch: n.pitch, tOn: n.tOn, tOff: n.tOff },
+      snap: noteSnapshot()
+    };
+  });
+
+  roll.addEventListener('mousemove', function (e) {
+    if (noteEdit.drag) return;
+    if (state.recording) { roll.style.cursor = 'default'; return; }
+    var pos = rollMousePos(e);
+    var hit = hitTestNote(pos.x, pos.y);
+    roll.style.cursor = hit ? (hit.mode === 'resize' ? 'ew-resize' : 'move') : 'default';
+  });
+
+  window.addEventListener('mousemove', function (e) {
+    if (!noteEdit.drag) return;
+    var pos = rollMousePos(e);
+    var geo = rollGeometry();
+    var n = state.notes[noteEdit.drag.idx];
+    var o = noteEdit.drag.orig;
+    if (noteEdit.drag.mode === 'move') {
+      var dt = ((pos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
+      var newTOn = Math.max(0, o.tOn + dt);
+      var dp = Math.round((noteEdit.drag.startY - pos.y) / geo.rowH);
+      var newPitch = Math.min(KEY_HIGH, Math.max(KEY_LOW, o.pitch + dp));
+      n.tOn = newTOn;
+      n.pitch = newPitch;
+    } else {
+      var dt2 = ((pos.x - noteEdit.drag.startX) / geo.w) * geo.tMax * 1000;
+      var newTOff = Math.max(n.tOn + 30, o.tOff + dt2);
+      n.tOff = newTOff;
+    }
+    drawRoll();
+  });
+
+  window.addEventListener('mouseup', function () {
+    if (!noteEdit.drag) return;
+    var o = noteEdit.drag.orig;
+    var n = state.notes[noteEdit.drag.idx];
+    var snap = noteEdit.drag.snap;
+    noteEdit.drag = null;
+    if (n.pitch !== o.pitch || Math.abs(n.tOn - o.tOn) > 1 || Math.abs(n.tOff - o.tOff) > 1) {
+      notePushUndo(snap);
+      afterNoteEdit();
+    }
+  });
+
+  $('noteDown').addEventListener('click', function () { transposeNotes(-1); });
+  $('noteUp').addEventListener('click', function () { transposeNotes(1); });
+  $('noteOctDown').addEventListener('click', function () { transposeNotes(-12); });
+  $('noteOctUp').addEventListener('click', function () { transposeNotes(12); });
+  $('noteQuant').addEventListener('click', function () { quantizeNotes(); });
+  $('noteDel').addEventListener('click', function () { deleteSelectedNote(); });
+  $('noteUndo').addEventListener('click', function () { noteUndo(); });
+  $('noteRedo').addEventListener('click', function () { noteRedo(); });
+
+  $('noteVel').addEventListener('input', function (e) {
+    var sel = selectedNoteRef();
+    if (!sel) return;
+    if (velDragStart === null) velDragStart = noteSnapshot();
+    sel.vel = parseInt(e.target.value, 10);
+    $('noteVelVal').textContent = sel.vel;
+    drawRoll();
+  });
+  $('noteVel').addEventListener('change', function () {
+    if (velDragStart === null) return;
+    noteEdit.undo.push(velDragStart);
+    if (noteEdit.undo.length > 50) noteEdit.undo.shift();
+    noteEdit.redo.length = 0;
+    velDragStart = null;
+    afterNoteEdit();
+  });
+
+  document.addEventListener('keydown', function (e) {
+    var tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if ((e.key === 'Delete' || e.key === 'Backspace') && noteEdit.selected >= 0) {
+      e.preventDefault();
+      deleteSelectedNote();
+    }
+  });
+
+  updateNoteTools();
 }
 
 /* ============================================================
@@ -1473,6 +1730,7 @@ function renderAll() {
   renderStaff();
   renderJianpu();
   updateMini();
+  updateNoteTools();
 }
 
 /* ============================================================
@@ -3176,6 +3434,68 @@ function runSelfTest() {
     ok('解析器不再引用旧函数', typeof decodePacket === 'undefined' && typeof midiCarry === 'undefined',
        'decodePacket=' + typeof decodePacket + ' midiCarry=' + typeof midiCarry);
 
+    /* ---- MIDI 音符编辑器 ---- */
+    (function () {
+      var keepNotes = state.notes, keepBpm = state.bpm, keepGrid = state.gridDiv;
+      var keepSel = noteEdit.selected, keepUndo = noteEdit.undo, keepRedo = noteEdit.redo;
+
+      ok('音名 C4', noteNameOf(60) === 'C4', noteNameOf(60));
+      ok('音名 C#4', noteNameOf(61) === 'C#4', noteNameOf(61));
+      ok('音名 A0', noteNameOf(21) === 'A0', noteNameOf(21));
+
+      state.notes = [
+        { pitch: 60, vel: 100, tOn: 0, tOff: 500 },
+        { pitch: 64, vel: 80, tOn: 600, tOff: 1100 },
+        { pitch: 67, vel: 110, tOn: 1200, tOff: 1700 }
+      ];
+      state.bpm = 120; state.gridDiv = 2;
+      noteEdit.undo = []; noteEdit.redo = [];
+
+      noteEdit.selected = 1;
+      transposeNotes(2);
+      ok('选中音符移调 +2', state.notes[1].pitch === 66, 'pitch=' + state.notes[1].pitch);
+      ok('移调不影响其它音符', state.notes[0].pitch === 60 && state.notes[2].pitch === 67,
+         state.notes[0].pitch + ',' + state.notes[2].pitch);
+      noteEdit.undo = []; noteEdit.redo = [];
+
+      noteEdit.selected = -1;
+      transposeNotes(-12);
+      ok('全体移调 -12', state.notes[0].pitch === 48 && state.notes[1].pitch === 54 && state.notes[2].pitch === 55,
+         state.notes.map(function (n) { return n.pitch; }).join(','));
+      noteEdit.undo = []; noteEdit.redo = [];
+
+      state.notes = [{ pitch: 60, vel: 100, tOn: 130, tOff: 410 }];
+      noteEdit.selected = -1;
+      quantizeNotes();
+      ok('量化 tOn 到网格', Math.abs(state.notes[0].tOn - 250) < 1, 'tOn=' + state.notes[0].tOn.toFixed(0));
+
+      state.notes = [
+        { pitch: 60, vel: 100, tOn: 0, tOff: 500 },
+        { pitch: 64, vel: 80, tOn: 600, tOff: 1100 }
+      ];
+      noteEdit.selected = 0; noteEdit.undo = []; noteEdit.redo = [];
+      deleteSelectedNote();
+      ok('删除选中音符', state.notes.length === 1 && state.notes[0].pitch === 64, 'n=' + state.notes.length);
+
+      noteUndo();
+      ok('撤销恢复音符', state.notes.length === 2 && state.notes[0].pitch === 60, 'n=' + state.notes.length);
+      noteRedo();
+      ok('重做再次删除', state.notes.length === 1 && state.notes[0].pitch === 64, 'n=' + state.notes.length);
+
+      var snap = noteSnapshot();
+      state.notes[0].vel = 10;
+      noteRestore(snap);
+      ok('快照还原力度', state.notes[0].vel === 80, 'vel=' + state.notes[0].vel);
+
+      state.notes = [{ pitch: 21, vel: 100, tOn: 0, tOff: 500 }];
+      noteEdit.selected = 0; noteEdit.undo = []; noteEdit.redo = [];
+      transposeNotes(-1);
+      ok('移调越界不改变', state.notes[0].pitch === 21, 'pitch=' + state.notes[0].pitch);
+
+      state.notes = keepNotes; state.bpm = keepBpm; state.gridDiv = keepGrid;
+      noteEdit.selected = keepSel; noteEdit.undo = keepUndo; noteEdit.redo = keepRedo;
+    })();
+
     var pass = out.filter(function (s) { return s.indexOf('PASS|') === 0; }).length;
     var box = document.createElement('pre');
     box.id = 'selftestOut';
@@ -3793,6 +4113,7 @@ function updateMini() {
 fitRoll();
 fitWave();
 fitOverview();
+setupNoteEditor();
 
 (function demo() {
   var q = new URLSearchParams(location.search);
