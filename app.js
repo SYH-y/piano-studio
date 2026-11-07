@@ -2182,7 +2182,8 @@ function parseMidiData(input) {
     tr.durationMs = tickMs(tr.endTick);
     tr.noteCount = tr.notes.length;
   });
-  var firstTempo = tempoMap[0] && tempoMap[0].micro || 500000;
+  var firstTempo = 500000;
+  tempoEvents.forEach(function (e) { if (e.tick === 0) firstTempo = e.micro; });
   var firstSig = sigEvents.sort(function (a, b) { return a.tick - b.tick; })[0] || { n: 4, d: 4 };
   var timeSig = ['4/4', '3/4', '2/4', '6/8'].indexOf(firstSig.n + '/' + firstSig.d) >= 0 ? firstSig.n + '/' + firstSig.d : '4/4';
   return { format: format, ppq: ppq, tracks: tracks, durationMs: tickMs(maxTick), bpm: Math.max(1, Math.round(60000000 / firstTempo)), timeSig: timeSig };
