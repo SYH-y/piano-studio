@@ -2265,6 +2265,7 @@ function loadSelectedMidiTracks() {
   if (!notes.length) { alert('所选轨道没有音符。'); return; }
   notes.sort(function (a, b) { return a.tOn - b.tOn || a.pitch - b.pitch; });
   ccs.sort(function (a, b) { return a.t - b.t; });
+  saveSnapshot(true);
   state.notes = notes.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
   state.ccs = ccs.map(function (c) { return { cc: c.cc, value: c.value, t: c.t }; });
   state.pending = {};
