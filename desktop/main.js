@@ -17,6 +17,17 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 
+// 自动更新：仅安装版可用。开发态（仓库里没装这个依赖）与便携版都跳过，
+// 所以这里用 try/catch 按需加载，避免启动即抛错。
+let autoUpdater = null;
+try {
+  ({ autoUpdater } = require('electron-updater'));
+} catch (err) {
+  autoUpdater = null;
+}
+// 便携版是单文件 exe，没有固定安装目录，无法原地替换自己
+const IS_PORTABLE = !!process.env.PORTABLE_EXECUTABLE_DIR;
+
 const SMOKE = process.argv.includes('--smoke');
 const argOf = (name) => {
   const hit = process.argv.find((a) => a.startsWith('--' + name + '='));
@@ -227,6 +238,11 @@ function buildMenu() {
       label: '帮助',
       submenu: [
         {
+          label: '检查更新…',
+          click: () => checkForUpdates(true)
+        },
+        { type: 'separator' },
+        {
           label: '项目主页',
           click: () => shell.openExternal('https://github.com/SYH-y/piano-studio')
         },
@@ -252,6 +268,127 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+/* ------------------------------------------------------------- 自动更新 */
+//
+// 安装版走 electron-builder + electron-updater：
+// 应用启动 5 秒后静默检查一次 GitHub Release 的 latest.yml，
+// 「帮助 → 检查更新…」可以手动检查并看到明确反馈。
+// 绿色版（portable）是单个 exe，没法替换自己，只能提示去 Releases 下载。
+
+let updateCheckManual = false;
+
+function updaterState() {
+  if (!app.isPackaged) return 'dev';
+  if (IS_PORTABLE) return 'portable';
+  if (!autoUpdater) return 'missing';
+  return 'ok';
+}
+
+function dialogBox(opts) {
+  const { dialog } = require('electron');
+  return mainWindow ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+}
+
+function notifyUpdate(message, detail, type) {
+  return dialogBox({ type: type || 'info', title: 'PIANO STUDIO 更新', message, detail, buttons: ['好'], noLink: true });
+}
+
+function askUpdate(message, detail, buttons) {
+  return dialogBox({
+    type: 'question',
+    title: 'PIANO STUDIO 更新',
+    message,
+    detail,
+    buttons,
+    defaultId: 0,
+    cancelId: buttons.length - 1,
+    noLink: true
+  });
+}
+
+async function checkForUpdates(manual) {
+  updateCheckManual = !!manual;
+  const state = updaterState();
+  if (state === 'dev') {
+    if (manual) await notifyUpdate('开发模式不检查更新', '只有在安装版里才会连到 GitHub Releases 检查新版本。');
+    return;
+  }
+  if (state === 'portable') {
+    if (manual) {
+      await notifyUpdate(
+        '绿色版需要手动更新',
+        '免安装版是单个 exe，无法在自己身上原地替换。\n请到 Releases 页面下载新版：\nhttps://github.com/SYH-y/piano-studio/releases'
+      );
+    }
+    return;
+  }
+  if (state === 'missing') {
+    if (manual) await notifyUpdate('更新组件缺失', '这个安装包没有包含更新组件，请下载最新的安装版。');
+    return;
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+  } catch (err) {
+    updateCheckManual = false;
+    if (manual) await notifyUpdate('检查更新失败', String((err && err.message) || err), 'error');
+  }
+}
+
+function initAutoUpdater() {
+  if (updaterState() !== 'ok') return;
+
+  // 不自动下载：先问用户，避免在慢网络下悄悄拉 80MB
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('update-available', async (info) => {
+    updateCheckManual = false;
+    const answer = await askUpdate(
+      '发现新版本 ' + info.version,
+      '当前版本 ' + app.getVersion() + '。是否现在下载并安装？\n下载完成后会自动重启。',
+      ['下载并安装', '稍后']
+    );
+    if (answer.response !== 0) return;
+    try {
+      await autoUpdater.downloadUpdate();
+    } catch (err) {
+      await notifyUpdate('下载失败', String((err && err.message) || err), 'error');
+    }
+  });
+
+  autoUpdater.on('update-not-available', async () => {
+    if (!updateCheckManual) return;
+    updateCheckManual = false;
+    await notifyUpdate('已是最新版本', '当前版本 ' + app.getVersion() + '。');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    if (mainWindow && progress && typeof progress.percent === 'number') {
+      // 任务栏进度条：0–1，下载完成后清除
+      mainWindow.setProgressBar(Math.max(0.01, Math.min(1, progress.percent / 100)));
+    }
+  });
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    if (mainWindow) mainWindow.setProgressBar(-1);
+    const answer = await askUpdate(
+      '新版本 ' + info.version + ' 已下载完成',
+      '是否立即重启并安装？\n选择「稍后」会在下次退出应用时自动安装。',
+      ['立即重启并安装', '稍后']
+    );
+    if (answer.response === 0) autoUpdater.quitAndInstall(false, true);
+  });
+
+  autoUpdater.on('error', async (err) => {
+    if (mainWindow) mainWindow.setProgressBar(-1);
+    if (!updateCheckManual) return;
+    updateCheckManual = false;
+    await notifyUpdate('更新出错', String((err && err.message) || err), 'error');
+  });
+
+  setTimeout(() => { checkForUpdates(false); }, 5000);
+}
+
 /* ------------------------------------------------------------- 冒烟自检 */
 
 async function runSmoke(win, outPath) {
@@ -265,6 +402,8 @@ async function runSmoke(win, outPath) {
     await sleep(250);
   }
 
+  // 打包后必须带上 electron-updater，否则「检查更新」会静默失效
+  const updater = autoUpdater ? 'ok' : 'missing';
   const bt = await win.webContents.executeJavaScript('typeof navigator.bluetooth');
   const secure = await win.webContents.executeJavaScript('window.isSecureContext');
   const tone = await win.webContents.executeJavaScript('typeof (window.AudioContext || window.webkitAudioContext)');
@@ -303,7 +442,8 @@ async function runSmoke(win, outPath) {
     && workspace.bodyDisplay !== 'none' && workspace.bodyHeight > 300
     && Object.keys(workspace.visible || {}).every((key) => workspace.visible[key] > 0)
     && !workspace.error;
-  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true && navOk;
+  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true && navOk
+    && (!app.isPackaged || updater === 'ok');
 
   // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数
   const resultPath = argOf('result');
@@ -315,6 +455,7 @@ async function runSmoke(win, outPath) {
         bluetooth: bt,
         secureContext: secure,
         audioContext: tone,
+        updater,
         workspace,
         electron: process.versions.electron
       }, null, 2));
@@ -349,6 +490,8 @@ if (!app.requestSingleInstanceLock()) {
     buildMenu();
 
     mainWindow = createWindow();
+
+    if (!SMOKE) initAutoUpdater();
 
     mainWindow.webContents.on('render-process-gone', (e, details) => {
       console.error('渲染进程退出：' + details.reason);

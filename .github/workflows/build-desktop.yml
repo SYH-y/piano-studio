@@ -59,4 +59,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: desktop/dist/*.exe
+          # latest.yml / *.blockmap 是 electron-updater 的更新清单，
+          # 少了它们应用内「检查更新」就找不到新版本
+          files: |
+            desktop/dist/*.exe
+            desktop/dist/latest*.yml
+            desktop/dist/*.blockmap

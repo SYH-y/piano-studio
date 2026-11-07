@@ -1,7 +1,7 @@
 {
   "name": "piano-studio-desktop",
   "productName": "PIANO STUDIO",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "PIANO STUDIO 桌面版 — 电钢琴蓝牙录音、制谱、导出与音频剪辑",
   "main": "main.js",
   "author": "PIANO STUDIO contributors",
@@ -47,8 +47,18 @@
     "win": {
       "icon": "build/icon.png",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -62,6 +72,16 @@
     },
     "portable": {
       "artifactName": "PianoStudio-Portable-${version}.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SYH-y",
+        "repo": "piano-studio"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
   }
 }
