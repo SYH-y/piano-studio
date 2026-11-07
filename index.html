@@ -199,6 +199,39 @@
       <p class="hint">速度估准了，谱子才准。点「重新排版」会按当前 BPM 和网格重新量化。</p>
     </div>
 
+    <div class="card practice-card">
+      <h3>练习中心<span class="sub">选段循环 · 速度训练 · 练习统计</span></h3>
+      <div class="practice-range">
+        <label>开始 <input id="practiceStart" type="number" min="0" step="0.1" value="0"></label>
+        <span>—</span>
+        <label>结束 <input id="practiceEnd" type="number" min="0" step="0.1" value="0"></label>
+        <button class="btn mini" id="practiceFull" type="button">全曲</button>
+      </div>
+      <div class="field">
+        <label>练习速度 <b id="practiceTempoVal">100%</b></label>
+        <input type="range" id="practiceTempo" min="40" max="120" value="100">
+      </div>
+      <div class="field">
+        <label>练习声部</label>
+        <select id="practiceHand">
+          <option value="all">双手</option>
+          <option value="right">右手（C4 以上）</option>
+          <option value="left">左手（C4 以下）</option>
+        </select>
+      </div>
+      <label class="checkbox"><input type="checkbox" id="practiceLoop" checked> A/B 循环</label>
+      <div class="practice-stats">
+        <span>轮次 <b id="practiceRounds">0</b></span>
+        <span>准确率 <b id="practiceAccuracy">—</b></span>
+        <span>错音 <b id="practiceWrong">0</b></span>
+      </div>
+      <div class="practice-actions">
+        <button class="btn primary" id="btnPracticeStart" disabled>开始练习</button>
+        <button class="btn" id="btnPracticeStop" disabled>结束练习</button>
+      </div>
+      <p class="hint" id="practiceHint">录完一段后选择起止时间，软件会按当前速度循环播放这一段。</p>
+    </div>
+
     <div class="card">
       <h3>音色与混音</h3>
       <button class="btn wide" id="btnSamples" style="margin-bottom:12px;">加载真实钢琴采样</button>
@@ -256,6 +289,7 @@
       <li><b>连接</b>　点右上角「连接钢琴」，在弹窗里选 <span class="mono">Dight Piano MIDI ××××</span>。琴的蓝牙要处于可被发现状态——厂商 App 里能搜到、但<b>不要点连接</b>，同一时刻只允许一个连接。</li>
       <li><b>录音</b>　点「开始录音」，默认走四拍预备。想跟节拍器就勾上右侧开关，拍号可以设 4/4、3/4、2/4、6/8。</li>
       <li><b>出谱</b>　五线谱和简谱会边弹边长。BPM 是自动估的，不准就拖滑块调，再点「重新排版」。</li>
+      <li><b>练习</b>　录完后在右侧「练习中心」设置起止时间、速度和左右手，按「开始练习」循环跟弹。</li>
       <li><b>导出</b>　MIDI 是可编辑的演奏数据，换音源能重新发声；WAV / MP3 是当前页面合成好的成品。</li>
       <li><b>剪</b>　到「音频剪辑」点「载入录音」，或直接把 mp3 / wav 拖进窗口，然后分割、拖动、裁剪。</li>
     </ol>
