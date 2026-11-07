@@ -802,6 +802,7 @@ function stopRec() {
   }
   drawRoll();
   scheduleSave();
+  if (has) saveSnapshot(true);
   updateMini();
 }
 
@@ -3499,6 +3500,13 @@ function runSelfTest() {
     ok('第二小节拍数完整', Math.abs(sum1 - 4) < 0.01, 'sum=' + sum1);
     state.notes = kn; state.timeSig = ks; state.bpm = kb; state.gridDiv = kg;
 
+    // 版本快照摘要
+    ok('快照摘要-音符', snapMeta({ notes: [{}, {}, {}], clips: [] }) === '3 个音符',
+       snapMeta({ notes: [{}, {}, {}], clips: [] }));
+    ok('快照摘要-音频', snapMeta({ notes: [], clips: [{}, {}] }) === '2 段音频',
+       snapMeta({ notes: [], clips: [{}, {}] }));
+    ok('快照摘要-空', snapMeta({ notes: [], clips: [] }) === '空', snapMeta({ notes: [], clips: [] }));
+
     // 5) 3/4 的补白小节必须是 3 拍
     var keepNotes = state.notes, keepSig = state.timeSig, keepBpm = state.bpm;
     state.notes = [
@@ -3845,6 +3853,115 @@ function idbDel(key) {
   });
 }
 
+function idbGetAll() {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction(DB_STORE, 'readonly');
+      var store = tx.objectStore(DB_STORE);
+      var keysReq = store.getAllKeys();
+      keysReq.onsuccess = function () {
+        var keys = keysReq.result || [];
+        var valsReq = store.getAll();
+        valsReq.onsuccess = function () {
+          var vals = valsReq.result || [];
+          var out = [];
+          for (var i = 0; i < keys.length; i++) out.push({ key: keys[i], val: vals[i] });
+          resolve(out);
+        };
+        valsReq.onerror = function () { reject(valsReq.error); };
+      };
+      keysReq.onerror = function () { reject(keysReq.error); };
+    });
+  });
+}
+
+/* ============================================================
+   版本快照
+   ============================================================ */
+function snapMeta(v) {
+  var parts = [];
+  if (v.clips && v.clips.length) parts.push(v.clips.length + ' 段音频');
+  if (v.notes && v.notes.length) parts.push(v.notes.length + ' 个音符');
+  return parts.join(' · ') || '空';
+}
+
+function saveSnapshot(silent) {
+  if (!state.notes.length && !edit.srcBuf) return Promise.resolve(false);
+  var meta = serializeMeta();
+  if (edit.srcBuf) {
+    try { meta.audioBlob = encodeWav(edit.srcBuf); } catch (e) {}
+  }
+  var key = 'snap_' + Date.now();
+  return idbPut(key, meta).then(function () {
+    listSnapshots();
+    if (!silent) {
+      var d = new Date();
+      setPill('已保存版本 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()), 'on');
+    }
+    return true;
+  }).catch(function () {
+    if (!silent) alert('快照保存失败（可能是存储空间不足）');
+    return false;
+  });
+}
+
+function listSnapshots() {
+  var host = $('snapList');
+  if (!host) return;
+  idbGetAll().then(function (rows) {
+    var snaps = rows.filter(function (r) { return String(r.key).indexOf('snap_') === 0; })
+      .sort(function (a, b) { return b.key.localeCompare(a.key); });
+    if (!snaps.length) {
+      host.innerHTML = '<p class="hint">还没有快照。点「保存当前版本」记录一个可恢复的历史点。</p>';
+      return;
+    }
+    host.textContent = '';
+    snaps.forEach(function (s) {
+      var ts = parseInt(String(s.key).slice(5), 10) || 0;
+      var d = new Date(ts);
+      var v = s.val || {};
+      var row = document.createElement('div');
+      row.className = 'snap-row';
+
+      var info = document.createElement('div');
+      info.className = 'snap-info';
+      var b = document.createElement('b');
+      b.textContent = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+      var span = document.createElement('span');
+      span.textContent = snapMeta(v);
+      info.appendChild(b);
+      info.appendChild(span);
+
+      var btns = document.createElement('div');
+      btns.className = 'snap-btns';
+      var restore = document.createElement('button');
+      restore.className = 'btn mini';
+      restore.type = 'button';
+      restore.textContent = '恢复';
+      restore.addEventListener('click', function () {
+        if (!confirm('恢复这个版本会覆盖当前内容，确定吗？')) return;
+        applyProject(v).then(function () {
+          setPill('已恢复到 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()), 'on');
+          scheduleSave();
+        });
+      });
+      var del = document.createElement('button');
+      del.className = 'btn mini danger';
+      del.type = 'button';
+      del.textContent = '删除';
+      del.addEventListener('click', function () {
+        if (!confirm('删除这个版本？')) return;
+        idbDel(s.key).then(function () { listSnapshots(); });
+      });
+      btns.appendChild(restore);
+      btns.appendChild(del);
+      row.appendChild(info);
+      row.appendChild(btns);
+      host.appendChild(row);
+    });
+  }).catch(function () {});
+}
+
 function blobToBase64(blob) {
   return new Promise(function (resolve, reject) {
     var fr = new FileReader();
@@ -3936,6 +4053,12 @@ async function applyProject(snap) {
   edit.redo = [];
   edit.sel = null;
   edit.selClip = null;
+
+  noteEdit.selected = -1;
+  noteEdit.undo = [];
+  noteEdit.redo = [];
+  noteEdit.drag = null;
+  velDragStart = null;
 
   var audioBuf = null;
   try {
@@ -4045,6 +4168,8 @@ $('btnDiscard').addEventListener('click', function () {
 
 $('btnSaveProj').addEventListener('click', exportProject);
 $('btnOpenProj').addEventListener('click', function () { $('projInput').click(); });
+$('btnSnapshot').addEventListener('click', function () { saveSnapshot(false); });
+listSnapshots();
 $('projInput').addEventListener('change', function (e) {
   var f = e.target.files && e.target.files[0];
   if (f) importProject(f);

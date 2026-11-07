@@ -227,6 +227,15 @@
     </div>
 
     <div class="card">
+      <h3>版本快照</h3>
+      <div class="export-row">
+        <button class="btn full" id="btnSnapshot">保存当前版本</button>
+      </div>
+      <div class="snap-list" id="snapList"><p class="hint">还没有快照。点「保存当前版本」记录一个可恢复的历史点。</p></div>
+      <p class="hint">每次录完音会自动存一个版本；也可手动保存。版本存在本机浏览器，可随时恢复或删除。</p>
+    </div>
+
+    <div class="card">
       <h3>踏板监视器</h3>
       <div class="ccbox mono" id="ccbox">等待数据…</div>
       <p class="hint">踩一下踏板，看这里有没有出现 <span class="mono">B0 40 xx</span>。如果没有，说明这台琴的踏板<b>不走蓝牙</b>，软件里的延音只能靠「模拟踏板」补。</p>
@@ -270,7 +279,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.3.0</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.4.0</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
