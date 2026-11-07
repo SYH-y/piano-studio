@@ -35,3 +35,11 @@ _s*/
 _v*/
 _*.png
 _full.png
+
+# 桌面壳（Electron）
+desktop/node_modules/
+desktop/dist/
+
+# 桌面壳本地调试残留（Electron 运行时与残缺依赖，均为可再生的下载物）
+desktop/.electron/
+desktop/_nm_partial_broken/

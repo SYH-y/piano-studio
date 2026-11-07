@@ -109,7 +109,14 @@ drag, trim, reorder, with undo/redo, normalisation and de-click fades.
 
 ## Quick start
 
-**Windows** — install [Python 3](https://www.python.org/downloads/) (check
+**Windows desktop app (recommended)** — download `PianoStudio-Setup-x.y.z.exe`
+(installer) or `PianoStudio-Portable-x.y.z.exe` (no install needed) from the
+[latest release](https://github.com/SYH-y/piano-studio/releases/latest). It ships
+its own Chromium, so no Python and no browser are required; Bluetooth works out
+of the box. The binaries are unsigned, so SmartScreen may ask you to choose
+"More info → Run anyway".
+
+**Web version (Windows)** — install [Python 3](https://www.python.org/downloads/) (check
 `Add python.exe to PATH`), then double-click **`start.bat`**.
 
 **macOS / Linux**

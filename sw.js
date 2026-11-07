@@ -1,4 +1,4 @@
-const CACHE = 'piano-studio-v1.6.1';
+const CACHE = 'piano-studio-v1.7.0';
 const SHELL = [
   './',
   './index.html',

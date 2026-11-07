@@ -159,7 +159,19 @@
 
 ## 快速开始
 
-### Windows
+### 方式一：桌面版（推荐，Windows）
+
+到 [Releases](https://github.com/SYH-y/piano-studio/releases/latest) 下载：
+
+- **`PianoStudio-Setup-x.y.z.exe`** — 安装版，双击安装，桌面快捷方式
+- **`PianoStudio-Portable-x.y.z.exe`** — 免安装绿色版，下载后直接双击
+
+自带 Chromium，不需要装 Python、不需要浏览器，蓝牙功能完整。
+安装包未做代码签名，SmartScreen 提示时选「更多信息 → 仍要运行」。
+
+### 方式二：网页版（Windows / macOS / Linux）
+
+#### Windows
 
 1. 装 [Python 3](https://www.python.org/downloads/)（安装第一步勾选 `Add python.exe to PATH`）
 2. 双击 **`start.bat`**
@@ -505,6 +517,7 @@ piano-studio/
 │   ├── vexflow-bravura.js  Bravura 音乐字体数据
 │   └── lame.min.js         lamejs 1.2.1，浏览器内 MP3 编码
 ├── samples/                44 个钢琴采样（A0–C8，隔半音）
+├── desktop/                Electron 桌面版外壳（main.js + 打包配置）
 ├── docs/                   README 用的截图
 ├── THIRD-PARTY-NOTICES.md  第三方许可与署名
 ├── CHANGELOG.md

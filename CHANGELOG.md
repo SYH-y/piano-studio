@@ -2,6 +2,25 @@
 
 本项目的版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## v1.7.0 — 2026-11-07
+
+**桌面应用**。网页版保持不变，新增可下载的 Windows 桌面版（Electron 打包）。自检仍 **75 条**。
+
+### 新增
+
+- 桌面版外壳（`desktop/`）：自带 Chromium，双击即用，无需安装浏览器或 Python
+  - 自定义 `piano://` 安全协议加载页面（安全上下文，Web Bluetooth / Web MIDI / AudioContext 全部可用，存储位置固定）
+  - 蓝牙设备选择接入原生事件：自动优先匹配名字含 Dight / Piano / MIDI / 钢琴 的设备，20 秒搜不到再取消
+  - 单实例锁（重复双击聚焦已有窗口）、中文化菜单、站外链接交给系统浏览器
+- 构建产物：**安装版** `PianoStudio-Setup-x.y.z.exe` 与**免安装绿色版** `PianoStudio-Portable-x.y.z.exe`，由 GitHub Actions 在打 Tag 时自动构建并挂到 Release
+- 内置冒烟模式 `--smoke`：加载自检页，校验标题 / `navigator.bluetooth` / 安全上下文 / AudioContext 并截图，CI 与本地共用
+- 新增工作流 `build-desktop.yml`：构建 → 打包后冒烟 → 挂载 Release
+
+### 说明
+
+- 安装包未做代码签名，首次运行 Windows SmartScreen 可能提示「未知发布者」，点「更多信息 → 仍要运行」即可
+- 桌面版与网页版功能一致；网页版仍可在 https://syh-y.github.io/piano-studio/ 直接使用
+
 ## v1.6.1 — 2026-11-07
 
 质量与发布基础设施增强。

@@ -1,0 +1,67 @@
+{
+  "name": "piano-studio-desktop",
+  "productName": "PIANO STUDIO",
+  "version": "1.7.0",
+  "description": "PIANO STUDIO 桌面版 — 电钢琴蓝牙录音、制谱、导出与音频剪辑",
+  "main": "main.js",
+  "author": "PIANO STUDIO contributors",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "dist": "electron-builder --win nsis portable"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "io.github.syhy.pianostudio",
+    "productName": "PIANO STUDIO",
+    "copyright": "MIT License",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "!dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "..",
+        "to": "web",
+        "filter": [
+          "index.html",
+          "styles.css",
+          "app.js",
+          "icon.svg",
+          "manifest.webmanifest",
+          "lib/**",
+          "samples/**"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "PIANO STUDIO",
+      "artifactName": "PianoStudio-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "PianoStudio-Portable-${version}.${ext}"
+    }
+  }
+}
