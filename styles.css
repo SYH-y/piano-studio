@@ -170,6 +170,15 @@
     display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:18px; align-items:start;
   }
   @media(max-width:960px){ .layout{grid-template-columns:minmax(0,1fr);} }
+
+  /* 触控优化：消除 300ms 点击延迟、双击缩放与点击高亮闪烁 */
+  button, select, label.checkbox, input[type="range"], .tab, .mi{
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .keys-scroll, #staffHost, .snap-list, .note-tools, .edit-bar{
+    -webkit-overflow-scrolling: touch;
+  }
   @media(min-width:961px){
     aside{position:sticky; top:72px; max-height:calc(100vh - 90px); overflow-y:auto; padding-right:2px;}
     aside::-webkit-scrollbar{width:0;}
@@ -368,4 +377,24 @@
     canvas#roll{height:240px;}
     canvas#wave{height:220px;}
     .foot{padding:0 14px 84px;}
+    /* 触控友好的最小点击高度 */
+    .btn, .tab, .note-tools .btn, .edit-bar .btn{min-height:40px;}
+    .transport .btn{min-height:44px;}
+    select, input[type="range"]{min-height:38px;}
+  }
+
+  @media(max-width:480px){
+    .brand .btext b{font-size:12px;}
+    .transport{gap:5px;}
+    /* 指标横排，节省横向空间，避免窄屏溢出 */
+    .transport .metric{flex-direction:row; gap:4px; align-items:baseline; padding-left:8px;}
+    .transport .metric b{font-size:13px;}
+    .transport .metric span{font-size:10px;}
+    .transport .btn{font-size:12px; padding-left:8px; padding-right:8px;}
+    .metric b{font-size:14px;}
+    .card{padding:11px 12px;}
+    .keys{height:100px;}
+    canvas#roll{height:200px;}
+    canvas#wave{height:180px;}
+    .card-head .sub{display:none;}
   }
