@@ -13,10 +13,11 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f6e56'/%3E%3Crect x='6' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='13' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='20' y='8' width='6' height='16' rx='1.5' fill='%23fff'/%3E%3Crect x='10' y='8' width='4' height='8.5' rx='1' fill='%2323231f'/%3E%3Crect x='17' y='8' width='4' height='8.5' rx='1' fill='%2323231f'/%3E%3C/svg%3E">
 <style>
   :root{
-    --bg:#f2f2ee; --card:#fff; --line:#e3e2db; --line2:#efeee8;
-    --ink:#23231f; --muted:#6e6d66; --faint:#a3a29a;
+    --bg:#f4f5f2; --card:#fff; --line:#e2e7e3; --line2:#eef2ef;
+    --ink:#1e2925; --muted:#66716b; --faint:#98a29c;
     --accent:#0f6e56; --accent-2:#e1f5ee; --accent-line:#9fe1cb;
-    --red:#c2453f; --red-bg:#fceceb;
+    --red:#c2453f; --red-bg:#fceceb; --gold:#d19b47;
+    --shadow:0 10px 30px rgba(29,49,41,.055);
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
@@ -33,8 +34,15 @@
     padding:12px 22px; background:rgba(255,255,255,.86);
     backdrop-filter:blur(10px); border-bottom:1px solid var(--line);
   }
-  .brand{font-size:15px; font-weight:500; letter-spacing:.02em;}
-  .brand em{font-style:normal; color:var(--faint); font-weight:400; font-size:12px; margin-left:8px;}
+  .brand{display:flex; align-items:center; gap:11px;}
+  .brand .logo{
+    width:34px; height:34px; border-radius:11px; flex-shrink:0;
+    background:var(--accent); color:#fff; display:grid; place-items:center;
+    font-size:17px; line-height:1; box-shadow:0 6px 14px rgba(15,110,86,.22);
+  }
+  .brand .btext{display:flex; flex-direction:column; line-height:1.2;}
+  .brand .btext b{font-size:14px; font-weight:500; letter-spacing:.07em;}
+  .brand .btext em{font-style:normal; color:var(--faint); font-weight:400; font-size:11px; margin-top:2px;}
   .topbar .grow{flex:1;}
   .pill{
     display:inline-flex; align-items:center; gap:7px;
@@ -157,8 +165,8 @@
   }
 
   .card{
-    background:var(--card); border:1px solid var(--line); border-radius:12px;
-    padding:14px 16px; margin-bottom:16px;
+    background:var(--card); border:1px solid var(--line); border-radius:16px;
+    padding:16px 18px; margin-bottom:16px; box-shadow:var(--shadow);
   }
   .card.tight{padding:12px 14px;}
   .card h3{
@@ -167,8 +175,13 @@
   }
   .card h3 .sub{color:var(--faint); font-weight:400; letter-spacing:0; margin-left:6px;}
 
-  .card-head{display:flex; align-items:baseline; gap:10px; font-size:13px; font-weight:500; margin-bottom:12px;}
+  .card-head{
+    display:flex; align-items:baseline; flex-wrap:wrap; gap:6px 10px;
+    font-size:13px; font-weight:500; margin-bottom:12px;
+  }
   .card-head .sub{font-size:12px; color:var(--faint); font-weight:400;}
+  .head-actions{display:flex; gap:6px; margin-left:auto; align-self:center;}
+  .head-actions .btn{padding:5px 11px; font-size:12px;}
 
   .transport{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
   .transport .spacer{flex:1; min-width:12px;}
@@ -289,6 +302,18 @@
   .drop-box small{display:block; margin-top:6px; font-size:12px; color:var(--muted);}
   .edit-status{display:flex; flex-wrap:wrap; gap:22px; margin-top:10px; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
   .edit-status b{color:var(--ink); font-weight:500;}
+  @media(max-width:720px){
+    .topbar{padding:10px 14px; gap:10px;}
+    .brand .btext em{display:none;}
+    .layout{padding:14px 14px 44px; gap:14px;}
+    .card{padding:13px 14px; border-radius:14px;}
+    .metric{padding-left:9px;}
+    .metric b{font-size:15px;}
+    .metric span{font-size:10px;}
+    .head-actions{flex:0 0 100%; margin-left:0; order:9; justify-content:flex-end;}
+    .head-actions .btn{padding:4px 9px;}
+    .foot{padding:0 14px 84px;}
+  }
 </style>
 </head>
 <body>
@@ -298,7 +323,10 @@
 </div>
 
 <header class="topbar">
-  <div class="brand">PIANO STUDIO<em>蓝牙录音 · 实时制谱 · 时间轴剪辑</em></div>
+  <div class="brand">
+    <div class="logo" aria-hidden="true">♪</div>
+    <div class="btext"><b>PIANO STUDIO</b><em>蓝牙录音 · 实时制谱 · 时间轴剪辑</em></div>
+  </div>
   <div class="grow"></div>
   <span class="saved-hint" id="savedHint"></span>
   <span class="pill" id="pill"><i></i><span id="pillText">未连接</span></span>
@@ -330,6 +358,7 @@
         <div class="spacer"></div>
         <div class="metric"><b id="mNotes">0</b><span>音符</span></div>
         <div class="metric"><b id="mTime">0.0s</b><span>时长</span></div>
+        <div class="metric"><b id="mBpm">90</b><span>BPM</span></div>
         <div class="metric"><b id="mCc">0</b><span>踏板事件</span></div>
       </div>
     </div>
@@ -354,7 +383,15 @@
     </div>
 
     <div class="card">
-      <div class="card-head">音频剪辑<span class="sub">多片段时间轴 · 分割 / 拖动 / 裁剪 / 淡入淡出 / 换序</span></div>
+      <div class="card-head">
+        <span>音频剪辑</span><span class="sub">多片段时间轴 · 分割 / 拖动 / 裁剪 / 淡入淡出 / 换序</span>
+        <div class="head-actions">
+          <button class="btn" id="btnUndo" disabled>撤销</button>
+          <button class="btn" id="btnRedo" disabled>重做</button>
+          <button class="btn" id="btnEditWav" disabled>WAV</button>
+          <button class="btn" id="btnEditMp3" disabled>MP3</button>
+        </div>
+      </div>
       <div class="edit-bar">
         <button class="btn" id="btnImport">导入音频</button>
         <button class="btn" id="btnFromTake">载入录音</button>
@@ -365,11 +402,6 @@
         <button class="btn" id="btnCut" disabled>删除选区</button>
         <button class="btn" id="btnTrim" disabled>保留选区</button>
         <span class="sep"></span>
-        <button class="btn" id="btnUndo" disabled>撤销</button>
-        <button class="btn" id="btnRedo" disabled>重做</button>
-      </div>
-
-      <div class="edit-bar">
         <button class="btn" id="btnCopy" disabled>复制</button>
         <button class="btn" id="btnPaste" disabled>粘贴</button>
         <span class="sep"></span>
@@ -379,9 +411,7 @@
         <button class="btn" id="btnFadeIn" disabled>淡入</button>
         <button class="btn" id="btnFadeOut" disabled>淡出</button>
         <button class="btn" id="btnTrimSilence" disabled>裁掉静音</button>
-      </div>
-
-      <div class="edit-bar">
+        <span class="sep"></span>
         <button class="btn" id="btnEditPlay" disabled>▶ 播放</button>
         <button class="btn" id="btnEditStop" disabled>■</button>
         <label class="checkbox" style="margin:0 6px;"><input type="checkbox" id="chkLoop"> 循环</label>
@@ -397,9 +427,6 @@
           <option value="0.03">30ms</option>
           <option value="0.08">80ms</option>
         </select>
-        <span class="sep"></span>
-        <button class="btn" id="btnEditWav" disabled>WAV</button>
-        <button class="btn" id="btnEditMp3" disabled>MP3</button>
       </div>
 
       <canvas id="wave" tabindex="0"></canvas>
@@ -527,7 +554,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.2</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.0.3</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
@@ -1390,6 +1417,11 @@ function snapDown(len) {
   return NOTE_DURS[NOTE_DURS.length - 1];
 }
 
+function syncBpmLabel() {
+  var el = $('mBpm');
+  if (el) el.textContent = state.bpm;
+}
+
 function estimateTempo() {
   var starts = state.notes.map(function (n) { return n.tOn; }).sort(function (a, b) { return a - b; });
   if (starts.length < 4) return;
@@ -1408,6 +1440,7 @@ function estimateTempo() {
     state.bpm = bpm;
     $('bpm').value = bpm;
     $('bpmVal').textContent = bpm;
+    syncBpmLabel();
   }
 }
 
@@ -3836,6 +3869,7 @@ async function applyProject(snap) {
   state.keyOverride = snap.keyOverride || 'auto';
   $('bpm').value = state.bpm;
   $('bpmVal').textContent = state.bpm;
+  syncBpmLabel();
   $('grid').value = String(state.gridDiv);
   $('keySel').value = state.keyOverride;
 
@@ -4013,6 +4047,7 @@ $('bpm').addEventListener('input', function (e) {
   state.bpm = parseInt(e.target.value, 10);
   state.bpmAuto = false;
   $('bpmVal').textContent = state.bpm;
+  syncBpmLabel();
 });
 
 $('bpm').addEventListener('change', function () {
