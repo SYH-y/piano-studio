@@ -288,6 +288,17 @@
   .checkbox:last-child{margin-bottom:0;}
   .checkbox input{width:15px;height:15px; accent-color:var(--accent);}
 
+  .practice-range{display:flex; align-items:center; gap:6px; margin:10px 0 14px; color:var(--muted); font-size:12px;}
+  .practice-range label{display:flex; align-items:center; gap:4px; flex:1;}
+  .practice-range input{width:100%; min-width:0; padding:5px 7px; border:1px solid var(--line); border-radius:7px; background:#fbfbf9; color:var(--ink); font-size:12px;}
+  .practice-range > span{color:var(--faint);}
+  .practice-range .btn.mini{flex:0 0 auto; padding:5px 8px;}
+  .practice-stats{display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:12px 0;}
+  .practice-stats span{display:flex; flex-direction:column; padding:7px 8px; border:1px solid var(--line2); border-radius:8px; background:#fafaf7; color:var(--faint); font-size:11px;}
+  .practice-stats b{color:var(--ink); font-size:14px; font-weight:600; font-variant-numeric:tabular-nums;}
+  .practice-actions{display:grid; grid-template-columns:1fr 1fr; gap:7px;}
+  .practice-actions .btn{width:100%;}
+
   .export-row{display:grid; grid-template-columns:1fr 1fr; gap:8px;}
   .export-row .btn{width:100%; padding:9px 0;}
 
@@ -397,4 +408,7 @@
     canvas#roll{height:200px;}
     canvas#wave{height:180px;}
     .card-head .sub{display:none;}
+    .practice-range{flex-wrap:wrap;}
+    .practice-range label{min-width:92px;}
+    .practice-range .btn.mini{margin-left:auto;}
   }
