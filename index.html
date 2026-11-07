@@ -54,7 +54,7 @@
 
 <main class="layout">
   <section>
-    <div class="card">
+    <div class="card transport-card">
       <div class="transport">
         <button class="btn" id="btnRec">● 开始录音</button>
         <button class="btn" id="btnPlay" disabled>▶ 播放</button>
@@ -67,11 +67,11 @@
       </div>
     </div>
 
-    <div class="card tight">
+    <div class="card tight keyboard-card">
       <div class="keys-scroll"><div class="keys" id="keys"></div></div>
     </div>
 
-    <div class="card">
+    <div class="card roll-card">
       <div class="card-head">钢琴卷帘<span class="sub">点选音符可编辑：拖动移动、上下改音高、拖右端改时值</span></div>
       <div class="note-tools">
         <span class="note-sel" id="noteSel">没有音符可编辑</span>
@@ -91,17 +91,22 @@
       <canvas id="roll"></canvas>
     </div>
 
-    <div class="card">
+    <div id="printHeading">
+      <h1 id="printHeadingTitle">PIANO STUDIO 乐谱</h1>
+      <p id="printHeadingAuthor"></p>
+    </div>
+
+    <div class="card score-card staff-card">
       <div class="card-head">五线谱<span class="sub" id="staffMeta">高音 / 低音双谱表，自动识别调性</span></div>
       <div id="staffHost"><p class="empty">录一段，这里会生成五线谱</p></div>
     </div>
 
-    <div class="card">
+    <div class="card score-card jianpu-card">
       <div class="card-head">简谱<span class="sub" id="jianpuMeta">数字谱，含高低音点与减时线</span></div>
       <div id="jianpuHost"><p class="empty">录一段，这里会生成简谱</p></div>
     </div>
 
-    <div class="card">
+    <div class="card audio-card">
       <div class="card-head">
         <span>音频剪辑</span><span class="sub">多片段时间轴 · 分割 / 拖动 / 裁剪 / 淡入淡出 / 换序</span>
         <div class="head-actions">
@@ -242,6 +247,24 @@
       <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi,audio/x-midi" style="display:none">
       <p class="hint" id="midiImportSummary">支持标准 MIDI 文件（.mid / .midi）。导入后可以选择一条或多条轨道载入卷帘；载入会替换当前音符，软件会先保存一个快照。</p>
       <div class="midi-track-list" id="midiTrackList"></div>
+    </div>
+
+    <div class="card score-export-card">
+      <h3>谱面导出<span class="sub">PNG · 打印 · PDF</span></h3>
+      <div class="field">
+        <label>曲名</label>
+        <input type="text" id="scoreTitle" value="PIANO STUDIO 乐谱" maxlength="80">
+      </div>
+      <div class="field">
+        <label>作者</label>
+        <input type="text" id="scoreAuthor" placeholder="可选" maxlength="60">
+      </div>
+      <div class="export-row">
+        <button class="btn" id="btnStaffPng" disabled>五线谱 PNG</button>
+        <button class="btn" id="btnJianpuPng" disabled>简谱 PNG</button>
+        <button class="btn full" id="btnPrintScore" disabled>打印 / 保存 PDF</button>
+      </div>
+      <p class="hint">先录音或载入 MIDI，再导出当前谱面。打印窗口中选择“保存为 PDF”即可生成文件。</p>
     </div>
 
     <div class="card">
