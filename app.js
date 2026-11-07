@@ -59,6 +59,15 @@ var practice = {
   timer: null
 };
 
+var midiImport = {
+  fileName: '',
+  ppq: 480,
+  bpm: 120,
+  timeSig: '4/4',
+  tracks: [],
+  selected: {}
+};
+
 /* ============================================================
    音频引擎
    ============================================================ */
@@ -2037,6 +2046,261 @@ function varlen(n) {
   return out;
 }
 
+function parseMidiData(input) {
+  var bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  var pos = 0;
+  function need(n) { if (pos + n > bytes.length) throw new Error('MIDI 文件被截断'); }
+  function u16() { need(2); var v = (bytes[pos] << 8) | bytes[pos + 1]; pos += 2; return v; }
+  function u32() { need(4); var v = bytes[pos] * 0x1000000 + (bytes[pos + 1] << 16) + (bytes[pos + 2] << 8) + bytes[pos + 3]; pos += 4; return v; }
+  function text(data) {
+    var out = '';
+    for (var i = 0; i < data.length; i++) out += data[i] >= 32 ? String.fromCharCode(data[i]) : ' ';
+    return out.replace(/\\s+/g, ' ').trim();
+  }
+  function vlq(at) {
+    var value = 0, count = 0, b;
+    do {
+      if (at >= bytes.length || count++ > 4) throw new Error('MIDI 可变长度字段无效');
+      b = bytes[at++];
+      value = (value << 7) | (b & 0x7F);
+    } while (b & 0x80);
+    return { value: value, next: at };
+  }
+  function ascii4(a, b, c, d) { return String.fromCharCode(a, b, c, d); }
+
+  need(14);
+  if (ascii4(bytes[0], bytes[1], bytes[2], bytes[3]) !== 'MThd') throw new Error('不是标准 MIDI 文件');
+  pos = 4;
+  var headerLen = u32();
+  if (headerLen < 6) throw new Error('MIDI 文件头无效');
+  var format = u16();
+  var trackCount = u16();
+  var division = u16();
+  pos = 8 + headerLen;
+  if (division & 0x8000) throw new Error('暂不支持 SMPTE 时间码 MIDI');
+  var ppq = division || 480;
+  var tempoEvents = [{ tick: 0, micro: 500000 }];
+  var sigEvents = [];
+  var tracks = [];
+
+  for (var ti = 0; ti < trackCount; ti++) {
+    need(8);
+    if (ascii4(bytes[pos], bytes[pos + 1], bytes[pos + 2], bytes[pos + 3]) !== 'MTrk') throw new Error('第 ' + (ti + 1) + ' 条轨道无效');
+    pos += 4;
+    var len = u32();
+    var end = Math.min(bytes.length, pos + len);
+    var tick = 0, running = 0, name = '';
+    var notes = [], ccs = [], pending = {}, channels = {};
+    while (pos < end) {
+      var d = vlq(pos); pos = d.next; tick += d.value;
+      need(1);
+      var status = bytes[pos++];
+      if (status < 0x80) {
+        if (!running) throw new Error('MIDI running status 无效');
+        pos--;
+        status = running;
+      } else if (status < 0xF0) {
+        running = status;
+      }
+
+      if (status === 0xFF) {
+        need(1); var metaType = bytes[pos++];
+        var ml = vlq(pos); pos = ml.next; need(ml.value);
+        var data = bytes.slice(pos, pos + ml.value); pos += ml.value;
+        if (metaType === 0x03 && !name) name = text(data);
+        if (metaType === 0x51 && data.length === 3) {
+          tempoEvents.push({ tick: tick, micro: (data[0] << 16) | (data[1] << 8) | data[2] });
+        }
+        if (metaType === 0x58 && data.length >= 2) {
+          sigEvents.push({ tick: tick, n: data[0], d: Math.pow(2, data[1]) });
+        }
+        if (metaType === 0x2F) break;
+        continue;
+      }
+      if (status === 0xF0 || status === 0xF7) {
+        var sl = vlq(pos); pos = sl.next; need(sl.value); pos += sl.value; running = 0; continue;
+      }
+      if (status >= 0xF1) { continue; }
+
+      var kind = status & 0xF0, channel = status & 0x0F;
+      var dataLen = (kind === 0xC0 || kind === 0xD0) ? 1 : 2;
+      need(dataLen);
+      var a = bytes[pos++], b = dataLen === 2 ? bytes[pos++] : 0;
+      channels[channel] = true;
+      if (kind === 0x90 && b > 0) {
+        var onKey = channel + ':' + a;
+        if (!pending[onKey]) pending[onKey] = [];
+        pending[onKey].push({ pitch: a, vel: b, channel: channel, tOnTick: tick });
+      } else if (kind === 0x80 || (kind === 0x90 && b === 0)) {
+        var offKey = channel + ':' + a;
+        var stack = pending[offKey];
+        if (stack && stack.length) {
+          var on = stack.pop();
+          notes.push({ pitch: a, vel: on.vel, channel: on.channel, tOnTick: on.tOnTick, tOffTick: Math.max(tick, on.tOnTick + 1) });
+        }
+      } else if (kind === 0xB0) {
+        ccs.push({ cc: a, value: b, channel: channel, tick: tick });
+      }
+    }
+    Object.keys(pending).forEach(function (key) {
+      pending[key].forEach(function (on) {
+        notes.push({ pitch: on.pitch, vel: on.vel, channel: on.channel, tOnTick: on.tOnTick, tOffTick: Math.max(tick, on.tOnTick + 1) });
+      });
+    });
+    pos = end;
+    tracks.push({ id: ti, name: name || ('轨道 ' + (ti + 1)), notes: notes, ccs: ccs, channels: Object.keys(channels).map(Number), endTick: tick });
+  }
+
+  tempoEvents.sort(function (a, b) { return a.tick - b.tick; });
+  var tempoMap = [], curTick = 0, curMs = 0, curMicro = 500000;
+  tempoEvents.forEach(function (e) {
+    if (e.tick < curTick) return;
+    curMs += (e.tick - curTick) * curMicro / 1000 / ppq;
+    curTick = e.tick;
+    curMicro = e.micro > 0 ? e.micro : curMicro;
+    tempoMap.push({ tick: curTick, ms: curMs, micro: curMicro });
+  });
+  function tickMs(t) {
+    var last = tempoMap[0] || { tick: 0, ms: 0, micro: 500000 };
+    for (var i = 1; i < tempoMap.length; i++) {
+      if (tempoMap[i].tick > t) break;
+      last = tempoMap[i];
+    }
+    return last.ms + (t - last.tick) * last.micro / 1000 / ppq;
+  }
+  var maxTick = 0;
+  tracks.forEach(function (tr) {
+    maxTick = Math.max(maxTick, tr.endTick);
+    tr.notes = tr.notes.map(function (n) {
+      maxTick = Math.max(maxTick, n.tOffTick);
+      return { pitch: n.pitch, vel: n.vel, channel: n.channel, tOn: tickMs(n.tOnTick), tOff: tickMs(n.tOffTick) };
+    });
+    tr.ccs = tr.ccs.map(function (c) {
+      maxTick = Math.max(maxTick, c.tick);
+      return { cc: c.cc, value: c.value, channel: c.channel, t: tickMs(c.tick) };
+    });
+    tr.durationMs = tickMs(tr.endTick);
+    tr.noteCount = tr.notes.length;
+  });
+  var firstTempo = tempoMap[0] && tempoMap[0].micro || 500000;
+  var firstSig = sigEvents.sort(function (a, b) { return a.tick - b.tick; })[0] || { n: 4, d: 4 };
+  var timeSig = ['4/4', '3/4', '2/4', '6/8'].indexOf(firstSig.n + '/' + firstSig.d) >= 0 ? firstSig.n + '/' + firstSig.d : '4/4';
+  return { format: format, ppq: ppq, tracks: tracks, durationMs: tickMs(maxTick), bpm: Math.max(1, Math.round(60000000 / firstTempo)), timeSig: timeSig };
+}
+
+function renderMidiTracks() {
+  var host = $('midiTrackList');
+  if (!host) return;
+  host.textContent = '';
+  if (!midiImport.tracks.length) {
+    host.innerHTML = '<div class="midi-track-empty">还没有导入 MIDI 文件。</div>';
+    $('btnMidiLoad').disabled = true;
+    $('btnMidiClear').disabled = true;
+    return;
+  }
+  midiImport.tracks.forEach(function (tr) {
+    var row = document.createElement('label');
+    row.className = 'midi-track';
+    var checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !!midiImport.selected[tr.id];
+    checkbox.addEventListener('change', function () {
+      midiImport.selected[tr.id] = checkbox.checked;
+      renderMidiTracks();
+    });
+    var info = document.createElement('span');
+    info.className = 'midi-track-info';
+    var name = document.createElement('b');
+    name.textContent = tr.name;
+    var meta = document.createElement('span');
+    var channels = tr.channels.length ? '通道 ' + tr.channels.map(function (c) { return c + 1; }).join(',') : '无通道事件';
+    meta.textContent = tr.noteCount + ' 个音符 · ' + (tr.durationMs / 1000).toFixed(1) + 's · ' + channels;
+    info.appendChild(name);
+    info.appendChild(meta);
+    row.appendChild(checkbox);
+    row.appendChild(info);
+    host.appendChild(row);
+  });
+  var selected = midiImport.tracks.filter(function (tr) { return midiImport.selected[tr.id]; });
+  $('btnMidiLoad').disabled = !selected.length;
+  $('btnMidiClear').disabled = false;
+}
+
+async function importMIDIFile(file) {
+  if (!file) return;
+  try {
+    setPill('读取 MIDI…');
+    var data = await file.arrayBuffer();
+    var parsed = parseMidiData(data);
+    midiImport.fileName = file.name || '未命名 MIDI';
+    midiImport.ppq = parsed.ppq;
+    midiImport.bpm = parsed.bpm;
+    midiImport.timeSig = parsed.timeSig;
+    midiImport.tracks = parsed.tracks;
+    midiImport.selected = {};
+    var first = parsed.tracks.find(function (tr) { return tr.noteCount > 0; });
+    if (first) midiImport.selected[first.id] = true;
+    $('midiImportSummary').textContent = midiImport.fileName + ' · ' + parsed.tracks.length + ' 条轨道 · ' +
+      parsed.tracks.reduce(function (n, tr) { return n + tr.noteCount; }, 0) + ' 个音符 · ' +
+      (parsed.durationMs / 1000).toFixed(1) + 's · 约 ' + parsed.bpm + ' BPM';
+    renderMidiTracks();
+    setPill('MIDI 已读取', 'on');
+  } catch (e) {
+    midiImport.tracks = [];
+    midiImport.selected = {};
+    renderMidiTracks();
+    setPill(state.deviceName || '已连接', 'on');
+    alert('MIDI 文件读取失败：' + (e && e.message ? e.message : e));
+  }
+}
+
+function loadSelectedMidiTracks() {
+  var chosen = midiImport.tracks.filter(function (tr) { return midiImport.selected[tr.id]; });
+  var notes = [], ccs = [];
+  chosen.forEach(function (tr) {
+    notes = notes.concat(tr.notes);
+    ccs = ccs.concat(tr.ccs);
+  });
+  if (!notes.length) { alert('所选轨道没有音符。'); return; }
+  notes.sort(function (a, b) { return a.tOn - b.tOn || a.pitch - b.pitch; });
+  ccs.sort(function (a, b) { return a.t - b.t; });
+  state.notes = notes.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
+  state.ccs = ccs.map(function (c) { return { cc: c.cc, value: c.value, t: c.t }; });
+  state.pending = {};
+  state.lastDur = Math.max.apply(null, state.notes.map(function (n) { return n.tOff; })) / 1000;
+  state.bpm = midiImport.bpm || 120;
+  state.bpmAuto = false;
+  state.timeSig = midiImport.timeSig || '4/4';
+  $('bpm').value = state.bpm;
+  $('bpmVal').textContent = state.bpm;
+  syncBpmLabel();
+  $('timeSig').value = state.timeSig;
+  $('mNotes').textContent = state.notes.length;
+  $('mTime').textContent = state.lastDur.toFixed(1) + 's';
+  $('mCc').textContent = state.ccs.length;
+  noteEdit.selected = -1;
+  noteEdit.undo = [];
+  noteEdit.redo = [];
+  noteEdit.drag = null;
+  velDragStart = null;
+  ['btnPlay', 'btnMidi', 'btnWav', 'btnMp3', 'btnStop'].forEach(function (id) { $(id).disabled = false; });
+  buildScore();
+  renderAll();
+  practiceSyncBounds();
+  scheduleSave();
+  saveSnapshot(true);
+  updateMini();
+  setPill('已载入 ' + chosen.length + ' 条 MIDI 轨道', 'on');
+}
+
+function clearMidiImport() {
+  midiImport.fileName = '';
+  midiImport.tracks = [];
+  midiImport.selected = {};
+  $('midiImportSummary').textContent = '支持标准 MIDI 文件（.mid / .midi）。导入后可以选择一条或多条轨道载入卷帘。';
+  renderMidiTracks();
+}
+
 function exportMIDI() {
   var notes = state.notes.filter(function (n) { return n.tOff !== null; });
   if (!notes.length) return;
@@ -3776,6 +4040,28 @@ function runSelfTest() {
     ok('解析器不再引用旧函数', typeof decodePacket === 'undefined' && typeof midiCarry === 'undefined',
        'decodePacket=' + typeof decodePacket + ' midiCarry=' + typeof midiCarry);
 
+    /* ---- MIDI 文件导入 ---- */
+    (function () {
+      var track = [
+        0x00, 0xFF, 0x51, 0x03, 0x07, 0xA1, 0x20,
+        0x00, 0xFF, 0x03, 0x04, 0x54, 0x65, 0x73, 0x74,
+        0x00, 0x90, 0x3C, 0x64,
+        0x83, 0x60, 0x80, 0x3C, 0x00,
+        0x00, 0xFF, 0x2F, 0x00
+      ];
+      var midiBytes = new Uint8Array([
+        0x4D, 0x54, 0x68, 0x64, 0x00, 0x00, 0x00, 0x06, 0x00, 0x01, 0x00, 0x01, 0x01, 0xE0,
+        0x4D, 0x54, 0x72, 0x6B, 0x00, 0x00, 0x00, 0x1C
+      ].concat(track));
+      var parsed = parseMidiData(midiBytes);
+      ok('MIDI 头与 PPQ 解析', parsed.format === 1 && parsed.ppq === 480, 'ppq=' + parsed.ppq);
+      ok('MIDI 轨道名称解析', parsed.tracks.length === 1 && parsed.tracks[0].name === 'Test', parsed.tracks[0].name);
+      ok('MIDI 音符解析', parsed.tracks[0].notes.length === 1 && parsed.tracks[0].notes[0].pitch === 60 && parsed.tracks[0].notes[0].vel === 100,
+         'notes=' + parsed.tracks[0].notes.length);
+      ok('MIDI Tick 转毫秒', Math.abs(parsed.tracks[0].notes[0].tOff - 500) < 0.1, 'tOff=' + parsed.tracks[0].notes[0].tOff.toFixed(1));
+      ok('MIDI 速度与拍号解析', parsed.bpm === 120 && parsed.timeSig === '4/4', parsed.bpm + ' BPM ' + parsed.timeSig);
+    })();
+
     /* ---- MIDI 音符编辑器 ---- */
     (function () {
       var keepNotes = state.notes, keepBpm = state.bpm, keepGrid = state.gridDiv;
@@ -3858,6 +4144,14 @@ $('fileInput').addEventListener('change', function (e) {
   e.target.value = '';
 });
 $('btnFromTake').addEventListener('click', loadTakeForEdit);
+$('btnMidiImport').addEventListener('click', function () { $('midiFileInput').click(); });
+$('midiFileInput').addEventListener('change', function (e) {
+  var f = e.target.files && e.target.files[0];
+  if (f) importMIDIFile(f);
+  e.target.value = '';
+});
+$('btnMidiLoad').addEventListener('click', loadSelectedMidiTracks);
+$('btnMidiClear').addEventListener('click', clearMidiImport);
 $('btnSplit').addEventListener('click', splitAtPlayhead);
 $('btnDelClip').addEventListener('click', deleteSelectedClip);
 $('btnCut').addEventListener('click', cutSelection);
@@ -4029,11 +4323,12 @@ function pickAudio(files) {
 
     for (var k = 0; k < files.length; k++) {
       if (/\.json$/i.test(files[k].name || '')) { importProject(files[k]); return; }
+      if (/\.midi?$/i.test(files[k].name || '')) { importMIDIFile(files[k]); return; }
     }
 
     var f = pickAudio(files);
     if (!f) {
-      alert('拖进来的不是音频或工程文件。支持 mp3 / wav / m4a / flac / ogg / json。');
+      alert('拖进来的不是音频、MIDI 或工程文件。支持 mp3 / wav / m4a / flac / ogg / mid / midi / json。');
       return;
     }
     importAudioFile(f);
@@ -4617,6 +4912,7 @@ fitWave();
 fitOverview();
 setupNoteEditor();
 setupPractice();
+renderMidiTracks();
 
 (function demo() {
   var q = new URLSearchParams(location.search);
