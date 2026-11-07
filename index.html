@@ -415,6 +415,21 @@
   <a href="#" id="linkHelp">使用说明</a>
 </div>
 
+<script>
+  (function () {
+    var local = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (!local || !('serviceWorker' in navigator)) return;
+    var key = 'pianoStudio.localSwCleared';
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+    }).then(function () {
+      if (navigator.serviceWorker.controller && !sessionStorage.getItem(key)) {
+        sessionStorage.setItem(key, '1');
+        location.reload();
+      }
+    }).catch(function () {});
+  })();
+</script>
 <script src="lib/vexflow.js"></script>
 <script src="lib/vexflow-bravura.js"></script>
 <script src="lib/lame.min.js"></script>
