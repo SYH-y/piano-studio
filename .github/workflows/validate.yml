@@ -43,8 +43,10 @@ jobs:
           cat /tmp/piano-studio-http.log
           exit 1
 
-      - name: Install Chromium
-        run: npx --yes @playwright/test@1.50.0 install --with-deps chromium
+      - name: Install Playwright & Chromium
+        run: |
+          npm install --no-save --no-fund --no-audit @playwright/test@1.50.0
+          npx playwright install --with-deps chromium
 
       - name: Run browser smoke test
-        run: npx --yes @playwright/test@1.50.0 test .github/smoke.spec.cjs --reporter=line
+        run: npx playwright test .github/smoke.spec.cjs --reporter=line
