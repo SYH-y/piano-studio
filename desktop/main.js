@@ -268,6 +268,18 @@ async function runSmoke(win, outPath) {
   const bt = await win.webContents.executeJavaScript('typeof navigator.bluetooth');
   const secure = await win.webContents.executeJavaScript('window.isSecureContext');
   const tone = await win.webContents.executeJavaScript('typeof (window.AudioContext || window.webkitAudioContext)');
+  const workspace = await win.webContents.executeJavaScript(`(() => {
+    const tabs = Array.from(document.querySelectorAll('.workspace-tab'));
+    const result = {};
+    tabs.forEach((tab) => {
+      tab.click();
+      const name = tab.getAttribute('data-workspace');
+      const visible = Array.from(document.querySelectorAll('[data-workspace]'))
+        .filter((el) => !el.classList.contains('workspace-tab') && !el.classList.contains('workspace-hidden')).length;
+      result[name] = visible;
+    });
+    return { tabs: tabs.length, visible: result, error: document.body.innerText.indexOf('PIANO STUDIO') >= 0 ? '' : '页面没有主内容' };
+  })()`);
 
   if (outPath) {
     try {
@@ -278,7 +290,8 @@ async function runSmoke(win, outPath) {
     }
   }
 
-  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true;
+  const navOk = workspace && workspace.tabs === 4 && Object.keys(workspace.visible || {}).every((key) => workspace.visible[key] > 0) && !workspace.error;
+  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true && navOk;
 
   // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数
   const resultPath = argOf('result');
@@ -290,6 +303,7 @@ async function runSmoke(win, outPath) {
         bluetooth: bt,
         secureContext: secure,
         audioContext: tone,
+        workspace,
         electron: process.versions.electron
       }, null, 2));
     } catch (e) {
