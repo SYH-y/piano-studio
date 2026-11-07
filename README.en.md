@@ -222,7 +222,7 @@ The page ships with its own assertions — no test framework needed:
 http://localhost:8765/index.html?selftest=1
 ```
 
-prints **75 assertions** covering clip splitting, overlaps and crossfades, ripple delete,
+prints **80 assertions** covering clip splitting, overlaps and crossfades, ripple delete,
 drag clamping, undo/redo, paste isolation, project serialisation, snapshots,
 dropped-file detection, silence trimming across clips, dotted-note ticks, minor-key
 detection, cross-bar ties, USB MIDI and split MIDI packets.
