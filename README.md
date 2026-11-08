@@ -20,7 +20,7 @@
 
 </div>
 
-当前版本：**v1.11.0**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.12.0**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 <details>
 <summary><b>现在能做什么（点开）</b></summary>
