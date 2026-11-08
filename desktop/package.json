@@ -38,6 +38,7 @@
           "styles.css",
           "app.js",
           "icon.svg",
+          "icon.png",
           "manifest.webmanifest",
           "lib/**",
           "samples/**"
