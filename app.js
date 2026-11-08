@@ -4716,6 +4716,37 @@ function runSelfTest() {
       ok('MIDI 速度与拍号解析', parsed.bpm === 120 && parsed.timeSig === '4/4', parsed.bpm + ' BPM ' + parsed.timeSig);
     })();
 
+    /* ---- 练习反馈 ---- */
+    (function () {
+      var keep = {
+        active: practice.active, hand: practice.hand, speed: practice.speed,
+        expected: practice.expected, expectedFinalized: practice.expectedFinalized,
+        hits: practice.hits, wrong: practice.wrong, missed: practice.missed
+      };
+      practice.hand = 'right';
+      ok('练习右手筛选', practiceMatchesHand(72) && !practiceMatchesHand(48), 'right');
+      practice.hand = 'left';
+      ok('练习左手筛选', practiceMatchesHand(48) && !practiceMatchesHand(72), 'left');
+      practice.expected = [{ pitch: 60, at: 0, hit: true }, { pitch: 62, at: 0.1, hit: false }];
+      practice.expectedFinalized = false;
+      practice.missed = 0;
+      practiceFinalizeCycle();
+      ok('练习漏音统计', practice.missed === 1 && practice.expectedFinalized, 'missed=' + practice.missed);
+      practice.active = true;
+      practice.hand = 'all';
+      practice.speed = 100;
+      practice.expected = [{ pitch: 60, at: 0, hit: false }];
+      practice.cycleStartedAt = performance.now();
+      practice.hits = 0; practice.wrong = 0;
+      practiceHandleNote(60);
+      ok('练习命中统计', practice.hits === 1 && practice.wrong === 0, 'hits=' + practice.hits);
+      practiceHandleNote(61);
+      ok('练习错音统计', practice.wrong === 1, 'wrong=' + practice.wrong);
+      practice.active = keep.active; practice.hand = keep.hand; practice.speed = keep.speed;
+      practice.expected = keep.expected; practice.expectedFinalized = keep.expectedFinalized;
+      practice.hits = keep.hits; practice.wrong = keep.wrong; practice.missed = keep.missed;
+    })();
+
     /* ---- MIDI 音符编辑器 ---- */
     (function () {
       var keepNotes = state.notes, keepBpm = state.bpm, keepGrid = state.gridDiv;
