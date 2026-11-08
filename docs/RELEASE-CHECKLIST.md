@@ -56,7 +56,7 @@ $certPath = "C:\path\to\piano-studio.pfx"
    - Name: `WINDOWS_CERTIFICATE_BASE64`，Value: 剪贴板中的 Base64 文本
    - Name: `WINDOWS_CERTIFICATE_PASSWORD`，Value: 导出 PFX 时设置的密码
 
-4. 推送版本 Tag（例如 `v1.12.4`）。Tag 发布缺少任一 Secret 时，工作流会直接失败，防止误发未签名安装包。
+4. 推送版本 Tag（例如 `v1.12.4`）。在证书或 SignPath 接入完成前，Tag 仍可正常发布，但 Windows 文件会明确保持未签名状态。签名配置完成后，再在仓库 **Settings → Secrets and variables → Actions → Variables** 中把 `REQUIRE_SIGNING` 设为 `true`，之后缺少签名证书或签名校验失败会阻止发布。
 5. 下载 Release 中的 EXE，在 PowerShell 验证：
 
 ```powershell
