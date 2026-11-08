@@ -54,9 +54,15 @@ var practice = {
   hits: 0,
   total: 0,
   wrong: 0,
+  early: 0,
+  late: 0,
+  missed: 0,
   expected: [],
+  expectedFinalized: false,
   cycleStartedAt: 0,
-  timer: null
+  timer: null,
+  startedAt: 0,
+  history: []
 };
 
 var midiImport = {
@@ -948,6 +954,46 @@ function practiceMatchesHand(pitch) {
   return true;
 }
 
+
+function practiceRenderHistory() {
+  var host = $('practiceHistoryList');
+  if (!host) return;
+  host.textContent = '';
+  practice.history.slice().reverse().slice(0, 5).forEach(function (entry) {
+    var row = document.createElement('div');
+    row.className = 'practice-history-row';
+    var when = new Date(entry.ts);
+    var label = document.createElement('span');
+    label.textContent = pad2(when.getMonth() + 1) + '/' + pad2(when.getDate()) + ' ' + pad2(when.getHours()) + ':' + pad2(when.getMinutes()) + ' · ' + entry.rounds + ' 轮';
+    var value = document.createElement('b');
+    value.textContent = entry.accuracy + '% · 错 ' + entry.wrong + ' · 漏 ' + entry.missed;
+    row.appendChild(label);
+    row.appendChild(value);
+    host.appendChild(row);
+  });
+}
+function practiceLoadHistory() {
+  try {
+    var raw = localStorage.getItem('pianoStudio.practiceHistory');
+    practice.history = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(practice.history)) practice.history = [];
+  } catch (e) { practice.history = []; }
+  practiceRenderHistory();
+}
+function practiceSaveSession() {
+  if (!practice.total) return;
+  var entry = { ts: Date.now(), rounds: practice.cycle, accuracy: Math.round(practice.hits / practice.total * 100), wrong: practice.wrong, early: practice.early, late: practice.late, missed: practice.missed, duration: Math.max(0, Date.now() - practice.startedAt) };
+  practice.history.push(entry);
+  if (practice.history.length > 20) practice.history.shift();
+  try { localStorage.setItem('pianoStudio.practiceHistory', JSON.stringify(practice.history)); } catch (e) {}
+  practiceRenderHistory();
+}
+function practiceFinalizeCycle() {
+  if (practice.expectedFinalized) return;
+  practice.expectedFinalized = true;
+  practice.missed += practice.expected.filter(function (e) { return !e.hit; }).length;
+}
+
 function practiceUpdate() {
   var start = $('practiceStart'), end = $('practiceEnd');
   var max = practiceMaxSec();
@@ -958,6 +1004,9 @@ function practiceUpdate() {
   if ($('practiceTempoVal')) $('practiceTempoVal').textContent = practice.speed + '%';
   if ($('practiceRounds')) $('practiceRounds').textContent = practice.cycle;
   if ($('practiceWrong')) $('practiceWrong').textContent = practice.wrong;
+  if ($('practiceEarly')) $('practiceEarly').textContent = practice.early;
+  if ($('practiceLate')) $('practiceLate').textContent = practice.late;
+  if ($('practiceMissed')) $('practiceMissed').textContent = practice.missed;
   if ($('practiceAccuracy')) {
     $('practiceAccuracy').textContent = practice.total ? Math.round(practice.hits / practice.total * 100) + '%' : '—';
   }
@@ -1013,6 +1062,7 @@ function practiceStartCycle() {
   practice.expected = notes.map(function (n) {
     return { pitch: n.pitch, at: (n.tOn - practice.startMs) / 1000 * scale, hit: false };
   });
+  practice.expectedFinalized = false;
   practice.total += practice.expected.length;
   var base = actx.currentTime + 0.08;
   practice.cycleStartedAt = performance.now() + 80;
@@ -1027,6 +1077,7 @@ function practiceStartCycle() {
   if ($('practiceHint')) $('practiceHint').textContent = '第 ' + (practice.cycle + 1) + ' 轮 · 弹奏高亮声部，软件会统计音高和时机。';
   practice.timer = setTimeout(function () {
     if (!practice.active) return;
+    practiceFinalizeCycle();
     practice.cycle++;
     practiceUpdate();
     if (practice.loop) practiceStartCycle(); else stopPractice();
@@ -1035,7 +1086,7 @@ function practiceStartCycle() {
 
 function practiceHandleNote(pitch) {
   if (!practice.active || !practiceMatchesHand(pitch)) return;
-  var scale = 100 / practice.speed;
+  
   var elapsed = (performance.now() - practice.cycleStartedAt) / 1000;
   var best = null, bestDiff = Infinity;
   practice.expected.forEach(function (e) {
@@ -1043,12 +1094,25 @@ function practiceHandleNote(pitch) {
     var diff = Math.abs(e.at - elapsed);
     if (diff < bestDiff) { best = e; bestDiff = diff; }
   });
-  var tolerance = Math.max(0.18, 0.24 * scale);
+  var tolerance = Math.max(0.18, 0.24 * (100 / practice.speed));
   if (best && bestDiff <= tolerance) {
     best.hit = true;
     practice.hits++;
+    var signed = elapsed - best.at;
+    var feedback = $('practiceFeedback');
+    if (signed < -0.08) {
+      practice.early++;
+      if (feedback) { feedback.textContent = '偏早 ' + Math.round(-signed * 1000) + ' ms · ' + noteNameOf(pitch); feedback.className = 'practice-feedback early'; }
+    } else if (signed > 0.08) {
+      practice.late++;
+      if (feedback) { feedback.textContent = '偏晚 ' + Math.round(signed * 1000) + ' ms · ' + noteNameOf(pitch); feedback.className = 'practice-feedback late'; }
+    } else {
+      if (feedback) { feedback.textContent = '命中 · ' + noteNameOf(pitch); feedback.className = 'practice-feedback'; }
+    }
   } else {
     practice.wrong++;
+    var wrongFeedback = $('practiceFeedback');
+    if (wrongFeedback) { wrongFeedback.textContent = '错音 · ' + noteNameOf(pitch); wrongFeedback.className = 'practice-feedback wrong'; }
   }
   practiceUpdate();
 }
@@ -1069,6 +1133,12 @@ function startPractice() {
   practice.hits = 0;
   practice.total = 0;
   practice.wrong = 0;
+  practice.early = 0;
+  practice.late = 0;
+  practice.missed = 0;
+  practice.expectedFinalized = false;
+  practice.startedAt = Date.now();
+  if ($('practiceFeedback')) { $('practiceFeedback').textContent = '等待弹奏反馈'; $('practiceFeedback').className = 'practice-feedback'; }
   practiceUpdate();
   setPill('练习中', 'rec');
   practiceStartCycle();
@@ -1078,10 +1148,12 @@ function stopPractice() {
   if (practice.timer) clearTimeout(practice.timer);
   practice.timer = null;
   var wasActive = practice.active;
+  if (wasActive) practiceFinalizeCycle();
   practice.active = false;
   practice.expected = [];
   stopAllSound();
   practiceUpdate();
+  if (wasActive) practiceSaveSession();
   if (wasActive) setPill(state.deviceName || '已连接', 'on');
 }
 
@@ -1097,6 +1169,7 @@ function setupPractice() {
   $('btnPracticeStart').addEventListener('click', startPractice);
   $('btnPracticeStop').addEventListener('click', stopPractice);
   practiceSyncBounds();
+  practiceLoadHistory();
 }
 
 /* ============================================================
