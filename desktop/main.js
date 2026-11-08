@@ -248,6 +248,11 @@ function buildMenu() {
           label: '检查更新…',
           click: () => checkForUpdates(true)
         },
+        {
+          // 更新通道走不通时，这是最快的一条路：直接到发布页点安装包
+          label: '打开发布页（手动下载）',
+          click: () => shell.openExternal('https://github.com/SYH-y/piano-studio/releases/latest')
+        },
         { type: 'separator' },
         {
           label: '项目主页',
@@ -319,6 +324,21 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// electron-updater 没有超时开关：撞上 504 这种「网关吊着不回」的情况，
+// 单次请求能卡 30–60 秒，连试三次就是一分钟以上——用户感受就是「点了没反应」。
+// 这里套一层超时，到点就把界面还回去，并给出可操作的选择。
+function withTimeout(promise, ms, label) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('TIMEOUT: ' + (label || '请求超时') + '，' + Math.max(1, Math.round(ms / 1000)) + ' 秒没有响应'));
+    }, ms);
+    Promise.resolve(promise).then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
+
 // electron-updater 失败时会把整段 HTTP 响应头和 Node 堆栈塞进 message，
 // 直接弹给用户等于没提示。这里翻译成能看懂的原因。
 function classifyUpdateError(err) {
@@ -334,19 +354,49 @@ function classifyUpdateError(err) {
   const netIssue = /ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|net::ERR/i.test(raw);
   const gateway = code === '502' || code === '503' || code === '504' || /Gateway Time-out/i.test(raw);
 
+  // 403 / rate limit：GitHub 给未登录程序的额度是每小时 60 次，
+  // 用完之后连备用通道也走不通，但一小时内会自己恢复。
+  if (code === '403' || /rate limit/i.test(raw)) {
+    const minutes = err && err.rateLimitMinutes;
+    return {
+      retryable: false,
+      title: 'GitHub API 的调用次数用完了',
+      detail: [
+        'GitHub 给未登录程序的额度是每小时 60 次，这个额度已经用完（403）。',
+        minutes ? '大约 ' + minutes + ' 分钟后自动恢复，不用重装也不用改设置。' : '额度每小时自动重置，不用重装也不用改设置。',
+        '',
+        '急着更新的话，点「打开发布页」直接下载安装包即可。'
+      ].join('\n')
+    };
+  }
+
+  if (/^TIMEOUT:/.test(raw)) {
+    return {
+      retryable: true,
+      title: '检查更新超时',
+      detail: [
+        raw.replace(/^TIMEOUT:\s*/, '') + '。',
+        'GitHub 的更新接口在当前网络下很慢或不通。',
+        '',
+        '你可以：① 点「重试」；② 点「打开发布页」手动下载。',
+        '在中国大陆，检查更新通常需要开着代理。'
+      ].join('\n')
+    };
+  }
+
   if (gateway || netIssue) {
     return {
       retryable: true,
       title: '连不上 GitHub 的下载服务器',
       detail: [
         'GitHub 的 Release 下载地址返回了 ' + (code ? code + ' ' : '') + '网关错误' + (code === '504' ? '（Gateway Time-out）' : '') + '。',
-        '这是 GitHub 那边的问题，不是你电脑或程序的问题，一般过几分钟会自己恢复。',
+        '这是 GitHub 那边的问题，不是你电脑或程序的问题，一般过一段时间会自己恢复。',
         '',
-        '你可以：① 点「重试」再试一次；② 点「打开发布页」直接下载安装包。',
-        '在中国大陆，检查更新通常需要开着代理。'
+        '你可以：① 点「备用通道下载」绕开这个入口；② 点「打开发布页」直接下载安装包。'
       ].join('\n')
     };
   }
+
   if (code === '404' || /Cannot parse releases feed|Unable to find latest version|latest\.yml/i.test(raw)) {
     return {
       retryable: true,
@@ -451,29 +501,67 @@ function downloadAsset(assetId, dest, expectSize) {
   });
 }
 
-async function downloadViaApi() {
-  let release;
+// 缓存 release 信息 30 分钟：GitHub 未登录的 API 额度只有 60 次/小时，
+// 反复点「检查更新」不该把额度烧光。
+function releaseCachePath() {
+  return path.join(app.getPath('userData'), 'update-cache.json');
+}
+
+function readReleaseCache() {
   try {
-    const res = await apiRequest(
-      'https://api.github.com/repos/SYH-y/piano-studio/releases/latest',
-      'application/vnd.github+json'
-    );
-    if (res.statusCode !== 200) throw new Error('HttpError: ' + res.statusCode);
-    release = await readJsonBody(res);
+    const data = JSON.parse(fs.readFileSync(releaseCachePath(), 'utf8'));
+    if (data && data.fetchedAt && Date.now() - data.fetchedAt < 30 * 60 * 1000 && data.release) {
+      return data.release;
+    }
   } catch (err) {
-    const answer = await dialogBox({
-      type: 'error',
-      title: 'PIANO STUDIO 更新',
-      message: '备用通道也连不上',
-      detail: 'GitHub API 同样失败了：' + String((err && err.message) || err).slice(0, 200)
-        + '\n\n只能打开发布页手动下载。',
-      buttons: ['打开发布页', '关闭'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true
-    });
-    if (answer.response === 0) shell.openExternal(RELEASES_URL);
-    return;
+    // 没缓存、缓存坏了都当作没有，不是错误
+  }
+  return null;
+}
+
+function writeReleaseCache(release) {
+  try {
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(releaseCachePath(), JSON.stringify({ fetchedAt: Date.now(), release }));
+  } catch (err) {
+    // 写不进去不影响更新，忽略
+  }
+}
+
+async function downloadViaApi() {
+  let release = readReleaseCache();
+  if (!release) {
+    try {
+      const res = await withTimeout(
+        apiRequest('https://api.github.com/repos/SYH-y/piano-studio/releases/latest', 'application/vnd.github+json'),
+        10000,
+        'GitHub API'
+      );
+      if (res.statusCode === 403) {
+        // 把额度恢复时间带出来，用户才知道要等多久
+        const reset = Number(res.headers['x-ratelimit-reset'] || 0);
+        const err = new Error('HttpError: 403');
+        if (reset) err.rateLimitMinutes = Math.max(1, Math.round((reset * 1000 - Date.now()) / 60000));
+        throw err;
+      }
+      if (res.statusCode !== 200) throw new Error('HttpError: ' + res.statusCode);
+      release = await readJsonBody(res);
+      writeReleaseCache(release);
+    } catch (err) {
+      const info = classifyUpdateError(err);
+      const answer = await dialogBox({
+        type: 'error',
+        title: 'PIANO STUDIO 更新',
+        message: info.title === '检查更新失败' ? '备用通道也连不上' : info.title,
+        detail: info.detail,
+        buttons: ['打开发布页', '关闭'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true
+      });
+      if (answer.response === 0) shell.openExternal(RELEASES_URL);
+      return;
+    }
   }
 
   const remote = String(release.tag_name || '').replace(/^v/i, '');
@@ -514,11 +602,12 @@ async function downloadViaApi() {
     await downloadAsset(asset.id, dest, asset.size);
   } catch (err) {
     if (mainWindow) mainWindow.setProgressBar(-1);
+    const info = classifyUpdateError(err);
     const answer = await dialogBox({
       type: 'error',
       title: 'PIANO STUDIO 更新',
-      message: '备用通道下载失败',
-      detail: '原因：' + String((err && err.message) || err).slice(0, 200) + '\n\n请到发布页手动下载。',
+      message: info.title === '检查更新失败' ? '备用通道下载失败' : info.title,
+      detail: info.detail,
       buttons: ['打开发布页', '关闭'],
       defaultId: 0,
       cancelId: 1,
@@ -602,23 +691,14 @@ async function checkForUpdates(manual) {
     return;
   }
 
-  // GitHub 的下载入口偶发 5xx（实测 504 会连续出现几次），静默重试往往就过了。
-  // 手动检查重试 3 次，后台静默检查只试 2 次，避免无谓地拉长启动时的等待。
-  const tries = manual ? 3 : 2;
-  for (let attempt = 1; attempt <= tries; attempt++) {
-    try {
-      await autoUpdater.checkForUpdates();
-      return;
-    } catch (err) {
-      const info = classifyUpdateError(err);
-      if (info.retryable && attempt < tries) {
-        await delay(1200 * attempt);
-        continue;
-      }
-      updateCheckManual = false;
-      if (manual) await updateErrorDialog(err);
-      return;
-    }
+  // 只试一次：504 往往连续出现，重试三次等于把等待时间乘三，用户只会觉得「卡住」。
+  // 超时预算 15 秒（启动时的静默检查 10 秒），到点立刻把选择权交给用户。
+  try {
+    await withTimeout(autoUpdater.checkForUpdates(), manual ? 12000 : 8000, '检查更新');
+    return;
+  } catch (err) {
+    updateCheckManual = false;
+    if (manual) await updateErrorDialog(err);
   }
 }
 
