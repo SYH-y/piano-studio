@@ -23,6 +23,10 @@ jobs:
 
       - name: Install dependencies
         working-directory: desktop
+        env:
+          # GitHub Releases 的 Electron 二进制有时会 5xx / 超时，用镜像兜底
+          ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
         run: npm install --no-fund --no-audit
 
       - name: Build installer and portable exe
