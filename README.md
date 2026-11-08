@@ -20,7 +20,7 @@
 
 </div>
 
-当前版本：**v1.12.4**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.12.5**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 <details>
 <summary><b>现在能做什么（点开）</b></summary>
@@ -537,7 +537,10 @@ piano-studio/
 ├── app.js                  录音、制谱、剪辑与工程逻辑
 ├── manifest.webmanifest    PWA 安装清单
 ├── sw.js                   离线缓存 Service Worker
-├── icon.png                应用图标（favicon / PWA / 桌面 exe 共用）
+├── icon.png                应用图标原图（1254×1254，桌面 exe 由它生成）
+├── icon-64.png             浏览器标签页图标（5 KB）
+├── icon-180.png            iOS 添加到主屏幕
+├── icon-192.png / 512.png  PWA 安装图标
 ├── icon.svg                旧版矢量图标（保留备查）
 ├── serve.py                本地静态服务器（Web Bluetooth 需要安全上下文）
 ├── start.bat               Windows 一键启动
