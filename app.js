@@ -2119,7 +2119,7 @@ function renderAll() {
   updateMini();
   updateNoteTools();
   updateScoreExportButtons();
-render all anchor
+}
 
 /* ============================================================
    导出
