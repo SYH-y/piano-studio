@@ -28,39 +28,81 @@ jobs:
 
       - name: Check manifest icons match real files
         run: |
-          # 图标尺寸写错（例如清单写 1536x1536、文件其实是 1254x1254）会让浏览器
-          # 在「安装到主屏幕」时挑不到图标，肉眼又看不出来，所以放进 CI 守住。
+          # 两个坑都真实发生过，所以一起守住：
+          # 1) 清单里写的尺寸和图片实际尺寸不一致（1536x1536 vs 1254x1254），
+          #    浏览器在「安装到主屏幕」时会挑不到图标；
+          # 2) 图片本身被截断（只传了一半，786KB 而非 1.55MB），
+          #    IHDR 里的宽高仍然可读，但 IDAT 解压会失败、也缺 IEND，
+          #    浏览器/资源管理器会显示残缺或空白。
+          # 这里完整解码一遍，任何一项不满足就失败。
           python - <<'PY'
-          import json, os, struct, sys
+          import json, os, struct, sys, zlib
 
-          def png_size(path):
+          def inspect(path):
               with open(path, 'rb') as fh:
-                  head = fh.read(24)
-              if head[:8] != b'\x89PNG\r\n\x1a\n' or head[12:16] != b'IHDR':
-                  return None
-              return struct.unpack('>II', head[16:24])
+                  data = fh.read()
+              if data[:8] != b'\x89PNG\r\n\x1a\n':
+                  return None, '不是 PNG'
+              width = height = None
+              idat = b''
+              pos = 8
+              saw_iend = False
+              while pos + 8 <= len(data):
+                  length = int.from_bytes(data[pos:pos + 4], 'big')
+                  kind = data[pos + 4:pos + 8]
+                  if kind == b'IHDR':
+                      width, height = struct.unpack('>II', data[pos + 8:pos + 16])
+                  elif kind == b'IDAT':
+                      idat += data[pos + 8:pos + 8 + length]
+                  elif kind == b'IEND':
+                      saw_iend = True
+                      break
+                  pos += 12 + length
+              if width is None:
+                  return None, '缺少 IHDR'
+              if not saw_iend:
+                  return None, '文件被截断（没有 IEND，可能只上传了一半）'
+              try:
+                  zlib.decompress(idat)
+              except Exception as err:
+                  return None, '像素数据损坏（%s）' % err
+              return (width, height), ''
 
           manifest = json.load(open('manifest.webmanifest', encoding='utf-8'))
           problems = []
+          checked = []
           for icon in manifest.get('icons', []):
               src = icon.get('src', '').lstrip('./')
               if not os.path.exists(src):
                   problems.append('清单引用的图标不存在：' + src)
                   continue
-              real = png_size(src)
-              declared = str(icon.get('sizes', '')).lower()
-              if real is None:
-                  problems.append(src + ' 不是有效的 PNG')
+              size, err = inspect(src)
+              if err:
+                  problems.append('%s %s' % (src, err))
                   continue
-              real_text = '%dx%d' % real
+              checked.append(src)
+              declared = str(icon.get('sizes', '')).lower()
               if 'any' in declared:
                   continue
+              real_text = '%dx%d' % size
               if declared != real_text:
                   problems.append('%s 声明 %s，实际 %s' % (src, declared, real_text))
+
+          # 桌面版图标单独校验（不写在 manifest 里，但决定 exe / 任务栏图标）
+          for extra in ('desktop/build/icon.png',):
+              if not os.path.exists(extra):
+                  problems.append('缺少桌面图标：' + extra)
+                  continue
+              size, err = inspect(extra)
+              if err:
+                  problems.append('%s %s' % (extra, err))
+              elif min(size) < 256:
+                  problems.append('%s 太小（%dx%d），electron-builder 至少要 256x256' % (extra, size[0], size[1]))
+
           if problems:
               print('::error::' + '；'.join(problems))
               sys.exit(1)
-          print('manifest 图标与文件一致')
+          print('图标完整性与清单一致：' + ', '.join(checked))
           PY
 
       - name: Start local server and check entrypoint
