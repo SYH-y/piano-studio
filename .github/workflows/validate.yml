@@ -26,6 +26,43 @@ jobs:
       - name: Check JavaScript syntax
         run: node --check app.js
 
+      - name: Check manifest icons match real files
+        run: |
+          # 图标尺寸写错（例如清单写 1536x1536、文件其实是 1254x1254）会让浏览器
+          # 在「安装到主屏幕」时挑不到图标，肉眼又看不出来，所以放进 CI 守住。
+          python - <<'PY'
+          import json, os, struct, sys
+
+          def png_size(path):
+              with open(path, 'rb') as fh:
+                  head = fh.read(24)
+              if head[:8] != b'\x89PNG\r\n\x1a\n' or head[12:16] != b'IHDR':
+                  return None
+              return struct.unpack('>II', head[16:24])
+
+          manifest = json.load(open('manifest.webmanifest', encoding='utf-8'))
+          problems = []
+          for icon in manifest.get('icons', []):
+              src = icon.get('src', '').lstrip('./')
+              if not os.path.exists(src):
+                  problems.append('清单引用的图标不存在：' + src)
+                  continue
+              real = png_size(src)
+              declared = str(icon.get('sizes', '')).lower()
+              if real is None:
+                  problems.append(src + ' 不是有效的 PNG')
+                  continue
+              real_text = '%dx%d' % real
+              if 'any' in declared:
+                  continue
+              if declared != real_text:
+                  problems.append('%s 声明 %s，实际 %s' % (src, declared, real_text))
+          if problems:
+              print('::error::' + '；'.join(problems))
+              sys.exit(1)
+          print('manifest 图标与文件一致')
+          PY
+
       - name: Start local server and check entrypoint
         run: |
           # GitHub Actions 会在步骤结束时回收该步骤启动的子进程，

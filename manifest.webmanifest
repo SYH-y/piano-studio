@@ -5,10 +5,15 @@
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f2f3f0",
+  "background_color": "#f3f5f2",
   "theme_color": "#0f6e56",
   "lang": "zh-CN",
   "icons": [
-    { "src": "icon.png", "sizes": "1536x1536", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "icon.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }
