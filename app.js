@@ -2662,8 +2662,13 @@ function autoAlignMidiAudio() {
         used++;
       }
     });
-    if (used >= 3) score /= used;
+    if (used < 3) return;
+    score /= used;
     if (score > bestScore) { bestScore = score; bestOffset = offset; }
+  }
+  if (!isFinite(bestScore)) {
+    alert('音频和 MIDI 的时间范围没有足够重叠，无法自动对齐。');
+    return;
   }
   audioInput.latencyMs = Math.max(-500, Math.min(500, audioInput.latencyMs + bestOffset));
   if ($('audioInputLatency')) $('audioInputLatency').value = audioInput.latencyMs;
