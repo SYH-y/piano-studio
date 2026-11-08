@@ -237,6 +237,8 @@ Web Bluetooth 属于**强安全上下文** API，浏览器只允许在 `https://
 | Firefox | ❌ 不支持 Web Bluetooth |
 | Safari（macOS / iOS） | ❌ 不支持 Web Bluetooth |
 
+详细设备验证方法见 [兼容性矩阵](docs/COMPATIBILITY.md)，发布前检查项见 [发布检查清单](docs/RELEASE-CHECKLIST.md)。
+
 ---
 
 ## 部署成在线演示（可选）
