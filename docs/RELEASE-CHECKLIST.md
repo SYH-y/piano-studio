@@ -37,6 +37,10 @@ CSC_KEY_PASSWORD # PFX 证书密码
 
 可以通过 GitHub Actions 的 `workflow_dispatch` 生成未签名测试包。它适合内部测试，但 Windows 仍会显示“未知发布者”，不能消除 SmartScreen 警告。自签名证书也是免费测试方案，但公开分发时同样不会被 Windows 默认信任。
 
+### 开源项目的免费公开签名
+
+如果项目保持公开源代码并符合基金会条件，可以申请 [SignPath Foundation](https://signpath.org/) 的免费开源代码签名。它不要求你把 PFX 私钥放进 GitHub；获批后需要在 SignPath 创建项目和签名策略，再把 GitHub Actions 生成的构建产物提交到 SignPath 签名。申请和审核完成前，仍然只能发布未签名测试包。签名后的发布者名称可能显示为 SignPath Foundation。
+
 ### 准备正式发布证书
 
 1. 从支持 Windows Authenticode 的 CA 购买 OV 或 EV 代码签名证书，并导出带私钥的 `.pfx` 文件。
