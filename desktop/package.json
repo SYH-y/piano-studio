@@ -79,7 +79,10 @@
         "owner": "SYH-y",
         "repo": "piano-studio"
       }
-    ]
+    ],
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
   },
   "dependencies": {
     "electron-updater": "^6.3.9"
