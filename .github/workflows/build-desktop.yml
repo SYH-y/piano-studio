@@ -34,11 +34,14 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
           if ($env:CSC_LINK -and $env:CSC_KEY_PASSWORD) {
             Write-Host 'Windows code signing is configured'
+          } elseif ($env:RELEASE_BUILD -eq 'true') {
+            throw '发布 Tag 缺少 WINDOWS_CERTIFICATE_BASE64 或 WINDOWS_CERTIFICATE_PASSWORD，已阻止生成未签名发布包'
           } else {
-            Write-Warning 'Windows signing secrets are missing; artifacts will be unsigned'
+            Write-Warning 'Windows signing secrets are missing; workflow_dispatch 将生成未签名测试包'
           }
 
       - name: Build installer and portable exe
@@ -49,6 +52,21 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: npx electron-builder --win nsis portable --publish never
+
+      - name: Verify Windows signatures
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem dist -Filter 'PianoStudio-*.exe')
+          if ($files.Count -lt 2) { throw '未找到完整的 Windows 安装包和便携版产物' }
+          foreach ($file in $files) {
+            $signature = Get-AuthenticodeSignature -FilePath $file.FullName
+            if ($signature.Status -ne 'Valid') {
+              throw "Windows 签名校验失败：$($file.Name) -> $($signature.Status)"
+            }
+            Write-Host "$($file.Name) 已签名：$($signature.SignerCertificate.Subject)"
+          }
 
       - name: Smoke test the packaged app
         working-directory: desktop
