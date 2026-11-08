@@ -2549,6 +2549,8 @@ function clearMidiImport() {
   midiImport.fileName = '';
   midiImport.tracks = [];
   midiImport.selected = {};
+  midiImport.muted = {};
+  midiImport.solo = {};
   $('midiImportSummary').textContent = '支持标准 MIDI 文件（.mid / .midi）。导入后可以选择一条或多条轨道载入卷帘。';
   renderMidiTracks();
 }
