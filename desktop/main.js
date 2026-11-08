@@ -313,6 +313,274 @@ function askUpdate(message, detail, buttons) {
   });
 }
 
+const RELEASES_URL = 'https://github.com/SYH-y/piano-studio/releases';
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// electron-updater 失败时会把整段 HTTP 响应头和 Node 堆栈塞进 message，
+// 直接弹给用户等于没提示。这里翻译成能看懂的原因。
+function classifyUpdateError(err) {
+  const raw = String((err && (err.message || err)) || '');
+  // 取 HTTP 状态码不用正则：正则里的反斜杠经过多层转义容易写坏，
+  // 用 indexOf + 数字判断更稳，也不会误配到其它内容。
+  const code = (function () {
+    const at = raw.indexOf('HttpError:');
+    if (at < 0) return '';
+    const n = Number(raw.substr(at + 10, 8).trim().slice(0, 3));
+    return n >= 100 && n <= 599 ? String(n) : '';
+  })();
+  const netIssue = /ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|net::ERR/i.test(raw);
+  const gateway = code === '502' || code === '503' || code === '504' || /Gateway Time-out/i.test(raw);
+
+  if (gateway || netIssue) {
+    return {
+      retryable: true,
+      title: '连不上 GitHub 的下载服务器',
+      detail: [
+        'GitHub 的 Release 下载地址返回了 ' + (code ? code + ' ' : '') + '网关错误' + (code === '504' ? '（Gateway Time-out）' : '') + '。',
+        '这是 GitHub 那边的问题，不是你电脑或程序的问题，一般过几分钟会自己恢复。',
+        '',
+        '你可以：① 点「重试」再试一次；② 点「打开发布页」直接下载安装包。',
+        '在中国大陆，检查更新通常需要开着代理。'
+      ].join('\n')
+    };
+  }
+  if (code === '404' || /Cannot parse releases feed|Unable to find latest version|latest\.yml/i.test(raw)) {
+    return {
+      retryable: true,
+      title: '没读到可用的发布版本',
+      detail: 'GitHub 上没有找到 latest.yml 或最新发布，可能是刚发版、CDN 还没同步完。\n可以点「打开发布页」看看，或稍后重试。'
+    };
+  }
+  return {
+    retryable: false,
+    title: '检查更新失败',
+    detail: '技术原因（前 240 字）：\n' + raw.slice(0, 240)
+  };
+}
+
+/* --- 备用通道：走 GitHub API 取安装包 -------------------------------
+ *
+ * 为什么需要它：正常更新读的是
+ *   https://github.com/SYH-y/piano-studio/releases/download/<tag>/latest.yml
+ * 这个入口会整段返回 502/503/504（实测 x-github-edge-region: japaneast），
+ * 同一时刻 api.github.com 却是通的。于是这里改用：
+ *   1) api.github.com/.../releases/latest   查最新版本与资产 id
+ *   2) api.github.com/.../releases/assets/<id> + Accept: octet-stream 下安装包
+ * 两条都走 Chromium 网络栈（跟随系统代理），下完再交给用户确认安装。
+ */
+
+function apiRequest(url, accept) {
+  return new Promise((resolve, reject) => {
+    const req = net.request({ method: 'GET', url, redirect: 'follow' });
+    req.setHeader('Accept', accept);
+    req.setHeader('User-Agent', 'PIANO-STUDIO-Updater');
+    req.on('response', (res) => resolve(res));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+function readJsonBody(res) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    res.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    res.on('end', () => {
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(new Error('返回内容不是 JSON'));
+      }
+    });
+    res.on('error', reject);
+  });
+}
+
+function versionParts(v) {
+  return String(v || '').replace(/^v/i, '').split(/[^0-9]+/).filter(Boolean).map(Number);
+}
+
+function isNewerVersion(remote, local) {
+  const a = versionParts(remote);
+  const b = versionParts(local);
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+function downloadAsset(assetId, dest, expectSize) {
+  return new Promise((resolve, reject) => {
+    const url = 'https://api.github.com/repos/SYH-y/piano-studio/releases/assets/' + assetId;
+    const req = net.request({ method: 'GET', url, redirect: 'follow' });
+    req.setHeader('Accept', 'application/octet-stream');
+    req.setHeader('User-Agent', 'PIANO-STUDIO-Updater');
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        reject(new Error('HttpError: ' + res.statusCode));
+        return;
+      }
+      const total = Number(res.headers['content-length'] || 0) || Number(expectSize || 0);
+      let got = 0;
+      const out = fs.createWriteStream(dest);
+      res.on('data', (chunk) => {
+        got += chunk.length;
+        if (mainWindow && total > 0) {
+          mainWindow.setProgressBar(Math.max(0.01, Math.min(1, got / total)));
+        }
+      });
+      res.on('error', reject);
+      out.on('error', reject);
+      out.on('finish', () => {
+        if (mainWindow) mainWindow.setProgressBar(-1);
+        if (total > 0 && got !== total) {
+          reject(new Error('下载不完整：' + got + ' / ' + total + ' 字节'));
+          return;
+        }
+        resolve(dest);
+      });
+      res.pipe(out);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function downloadViaApi() {
+  let release;
+  try {
+    const res = await apiRequest(
+      'https://api.github.com/repos/SYH-y/piano-studio/releases/latest',
+      'application/vnd.github+json'
+    );
+    if (res.statusCode !== 200) throw new Error('HttpError: ' + res.statusCode);
+    release = await readJsonBody(res);
+  } catch (err) {
+    const answer = await dialogBox({
+      type: 'error',
+      title: 'PIANO STUDIO 更新',
+      message: '备用通道也连不上',
+      detail: 'GitHub API 同样失败了：' + String((err && err.message) || err).slice(0, 200)
+        + '\n\n只能打开发布页手动下载。',
+      buttons: ['打开发布页', '关闭'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+    if (answer.response === 0) shell.openExternal(RELEASES_URL);
+    return;
+  }
+
+  const remote = String(release.tag_name || '').replace(/^v/i, '');
+  if (!isNewerVersion(remote, app.getVersion())) {
+    await notifyUpdate('已是最新版本', '当前版本 ' + app.getVersion() + '，线上最新 ' + (remote || '未知') + '。');
+    return;
+  }
+
+  const assets = release.assets || [];
+  const asset = assets.find((item) => /Setup.*[.]exe$/i.test(item.name || ''));
+  if (!asset) {
+    const answer = await dialogBox({
+      type: 'error',
+      title: 'PIANO STUDIO 更新',
+      message: '这个发布里没有 Windows 安装包',
+      detail: '最新版本是 ' + remote + '，但资产里没找到 Setup 安装包。\n请到发布页手动下载。',
+      buttons: ['打开发布页', '关闭'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+    if (answer.response === 0) shell.openExternal(RELEASES_URL);
+    return;
+  }
+
+  const mb = asset.size ? (asset.size / 1048576).toFixed(1) : '?';
+  const go = await askUpdate(
+    '发现新版本 ' + remote,
+    '当前版本 ' + app.getVersion() + '。\n'
+      + 'GitHub 的正常更新入口暂时不可用，可以改走备用通道（GitHub API）直接取安装包，约 ' + mb + ' MB。\n'
+      + '下载完成后会先问你，再启动安装程序。',
+    ['下载', '稍后']
+  );
+  if (go.response !== 0) return;
+
+  const dest = path.join(app.getPath('temp'), asset.name);
+  try {
+    await downloadAsset(asset.id, dest, asset.size);
+  } catch (err) {
+    if (mainWindow) mainWindow.setProgressBar(-1);
+    const answer = await dialogBox({
+      type: 'error',
+      title: 'PIANO STUDIO 更新',
+      message: '备用通道下载失败',
+      detail: '原因：' + String((err && err.message) || err).slice(0, 200) + '\n\n请到发布页手动下载。',
+      buttons: ['打开发布页', '关闭'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    });
+    if (answer.response === 0) shell.openExternal(RELEASES_URL);
+    return;
+  }
+
+  const run = await askUpdate(
+    '已下载 ' + remote,
+    '安装包已保存到：\n' + dest + '\n\n点「立即安装」会启动安装程序；装完再打开应用即可。',
+    ['立即安装', '稍后']
+  );
+  if (run.response === 0) {
+    const fail = await shell.openPath(dest);
+    if (fail) await notifyUpdate('无法启动安装包', fail + '\n文件位置：\n' + dest, 'error');
+  }
+}
+
+let updateDialogOpen = false;
+
+// 统一的更新错误弹窗：给出「重试 / 打开发布页」，而不是一坨堆栈
+async function updateErrorDialog(err) {
+  if (updateDialogOpen) return;
+  updateDialogOpen = true;
+  try {
+    const info = classifyUpdateError(err);
+    // 备用通道只在安装版里有意义：绿色版替换不了自己，开发态没有打包
+    const canFallback = app.isPackaged && !IS_PORTABLE && !!autoUpdater;
+    const buttons = info.retryable
+      ? (canFallback ? ['重试', '备用通道下载', '关闭'] : ['重试', '打开发布页', '关闭'])
+      : ['重试', '关闭'];
+    const detail = info.retryable && canFallback
+      ? info.detail + '\n\n「备用通道下载」会绕开这个下载入口，改用 GitHub API 直接取安装包。'
+      : info.detail;
+    const answer = await dialogBox({
+      type: 'error',
+      title: 'PIANO STUDIO 更新',
+      message: info.title,
+      detail,
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+      noLink: true
+    });
+    if (answer.response === 0) {
+      updateDialogOpen = false;
+      return checkForUpdates(true);
+    }
+    if (info.retryable) {
+      if (canFallback && answer.response === 1) {
+        updateDialogOpen = false;
+        return downloadViaApi();
+      }
+      if (!canFallback && answer.response === 1) shell.openExternal(RELEASES_URL);
+    }
+  } finally {
+    updateDialogOpen = false;
+  }
+}
+
 async function checkForUpdates(manual) {
   updateCheckManual = !!manual;
   const state = updaterState();
@@ -324,7 +592,7 @@ async function checkForUpdates(manual) {
     if (manual) {
       await notifyUpdate(
         '绿色版需要手动更新',
-        '免安装版是单个 exe，无法在自己身上原地替换。\n请到 Releases 页面下载新版：\nhttps://github.com/SYH-y/piano-studio/releases'
+        '免安装版是单个 exe，无法在自己身上原地替换。\n请到 Releases 页面下载新版：\n' + RELEASES_URL
       );
     }
     return;
@@ -333,11 +601,24 @@ async function checkForUpdates(manual) {
     if (manual) await notifyUpdate('更新组件缺失', '这个安装包没有包含更新组件，请下载最新的安装版。');
     return;
   }
-  try {
-    await autoUpdater.checkForUpdates();
-  } catch (err) {
-    updateCheckManual = false;
-    if (manual) await notifyUpdate('检查更新失败', String((err && err.message) || err), 'error');
+
+  // GitHub 的下载入口偶发 5xx（实测 504 会连续出现几次），静默重试往往就过了。
+  // 手动检查重试 3 次，后台静默检查只试 2 次，避免无谓地拉长启动时的等待。
+  const tries = manual ? 3 : 2;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    try {
+      await autoUpdater.checkForUpdates();
+      return;
+    } catch (err) {
+      const info = classifyUpdateError(err);
+      if (info.retryable && attempt < tries) {
+        await delay(1200 * attempt);
+        continue;
+      }
+      updateCheckManual = false;
+      if (manual) await updateErrorDialog(err);
+      return;
+    }
   }
 }
 
@@ -359,7 +640,20 @@ function initAutoUpdater() {
     try {
       await autoUpdater.downloadUpdate();
     } catch (err) {
-      await notifyUpdate('下载失败', String((err && err.message) || err), 'error');
+      if (mainWindow) mainWindow.setProgressBar(-1);
+      const info = classifyUpdateError(err);
+      const answer = await dialogBox({
+        type: 'error',
+        title: 'PIANO STUDIO 更新',
+        message: info.title === '检查更新失败' ? '下载失败' : info.title,
+        detail: info.detail + '\n\n也可以点「打开发布页」手动下载安装包。',
+        buttons: ['重试下载', '打开发布页', '关闭'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true
+      });
+      if (answer.response === 1) shell.openExternal(RELEASES_URL);
+      else if (answer.response === 0) checkForUpdates(true);
     }
   });
 
@@ -386,11 +680,13 @@ function initAutoUpdater() {
     if (answer.response === 0) autoUpdater.quitAndInstall(false, true);
   });
 
+  // checkForUpdates 的 catch 里已经处理过就不再重复弹窗：
+  // electron-updater 会先 emit error、再把 promise 置为 rejected。
   autoUpdater.on('error', async (err) => {
     if (mainWindow) mainWindow.setProgressBar(-1);
     if (!updateCheckManual) return;
     updateCheckManual = false;
-    await notifyUpdate('更新出错', String((err && err.message) || err), 'error');
+    await updateErrorDialog(err);
   });
 
   setTimeout(() => { checkForUpdates(false); }, 5000);
