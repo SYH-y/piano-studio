@@ -19,13 +19,47 @@
 - [ ] 安装版自动更新可检查、下载和重启安装
 - [ ] 断网启动和工程恢复正常
 
-## 签名环境变量
+## Windows 代码签名
 
 electron-builder 使用以下环境变量签名 Windows 安装包：
 
 ```text
-CSC_LINK        # 证书文件路径或安全存储 URL
-CSC_KEY_PASSWORD # 证书密码
+CSC_LINK         # PFX 文件路径，或 PFX 的 Base64 内容
+CSC_KEY_PASSWORD # PFX 证书密码
 ```
+
+仓库工作流把它们映射到两个 GitHub Actions Secrets：
+
+- `WINDOWS_CERTIFICATE_BASE64`
+- `WINDOWS_CERTIFICATE_PASSWORD`
+
+### 没有证书时
+
+可以通过 GitHub Actions 的 `workflow_dispatch` 生成未签名测试包。它适合内部测试，但 Windows 仍会显示“未知发布者”，不能消除 SmartScreen 警告。自签名证书也是免费测试方案，但公开分发时同样不会被 Windows 默认信任。
+
+### 准备正式发布证书
+
+1. 从支持 Windows Authenticode 的 CA 购买 OV 或 EV 代码签名证书，并导出带私钥的 `.pfx` 文件。
+2. 在本机 PowerShell 中把 PFX 转成 Base64，整个过程不要把证书内容粘贴到聊天或代码仓库：
+
+```powershell
+$certPath = "C:\path\to\piano-studio.pfx"
+[Convert]::ToBase64String([IO.File]::ReadAllBytes($certPath)) | Set-Clipboard
+```
+
+3. 打开 GitHub 仓库的 **Settings → Secrets and variables → Actions → New repository secret**，新增：
+
+   - Name: `WINDOWS_CERTIFICATE_BASE64`，Value: 剪贴板中的 Base64 文本
+   - Name: `WINDOWS_CERTIFICATE_PASSWORD`，Value: 导出 PFX 时设置的密码
+
+4. 推送版本 Tag（例如 `v1.12.4`）。Tag 发布缺少任一 Secret 时，工作流会直接失败，防止误发未签名安装包。
+5. 下载 Release 中的 EXE，在 PowerShell 验证：
+
+```powershell
+Get-AuthenticodeSignature .\PianoStudio-Setup-1.12.4.exe |
+  Format-List Status,SignerCertificate
+```
+
+应看到 `Status : Valid`，并能看到你的发布者名称。
 
 证书和密码只放在 GitHub Actions Secrets，不要提交到仓库。
