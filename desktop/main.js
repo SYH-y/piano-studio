@@ -12,7 +12,7 @@
 //    不会因为路径变化丢工程。
 'use strict';
 
-const { app, BrowserWindow, Menu, protocol, net, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, protocol, net, session, shell, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
@@ -107,15 +107,6 @@ function registerProtocol() {
 // 必须自己选一个设备并回调，否则请求一直挂着。
 let chooser = null;
 
-function pickDevice(list) {
-  const named = list.filter((d) => d.deviceName && d.deviceName.trim());
-  // 优先名字里带钢琴/MIDI 字样的（梵西 Q1 广播名是 Dight Piano MIDI 2338）
-  const byName = named.find((d) => /dight|piano|midi|钢琴/i.test(d.deviceName));
-  if (byName) return byName;
-  if (named.length) return named[0];
-  return list[0] || null;
-}
-
 function closeChooser(deviceId) {
   if (!chooser) return;
   const { callback, timer } = chooser;
@@ -149,12 +140,28 @@ function setupBluetooth(contents) {
     if (!chooser) {
       chooser = {
         callback,
-        timer: setTimeout(() => closeChooser(''), 20000)
+        timer: setTimeout(() => closeChooser(''), 20000),
+        shown: false
       };
     }
-    const best = pickDevice(deviceList || []);
-    if (best) closeChooser(best.deviceId);
-    // 列表暂时为空就等下一轮事件（Chromium 发现新设备会再触发）
+    const list = (deviceList || []).filter((d) => d.deviceId && d.deviceName);
+    if (!list.length || chooser.shown) return;
+    chooser.shown = true;
+    const names = list.map((d) => d.deviceName);
+    const buttons = names.concat('取消');
+    dialog.showMessageBox(mainWindow || BrowserWindow.getFocusedWindow(), {
+      type: 'question',
+      title: '选择蓝牙 MIDI 设备',
+      message: '请选择要连接的电钢琴或 MIDI 键盘：',
+      detail: '如果列表中有多台设备，请确认名称和型号后再选择。',
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+      noLink: true
+    }).then(({ response }) => {
+      if (response >= 0 && response < list.length) closeChooser(list[response].deviceId);
+      else closeChooser('');
+    }).catch(() => closeChooser(''))
   });
 }
 
