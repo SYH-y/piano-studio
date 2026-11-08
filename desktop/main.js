@@ -442,7 +442,7 @@ async function runSmoke(win, outPath) {
     && workspace.bodyDisplay !== 'none' && workspace.bodyHeight > 300
     && Object.keys(workspace.visible || {}).every((key) => workspace.visible[key] > 0)
     && !workspace.error;
-  const ok = /^SELFTEST 80\/80$/.test(title) && bt === 'object' && secure === true && navOk
+  const ok = /^SELFTEST 85\/85$/.test(title) && bt === 'object' && secure === true && navOk
     && (!app.isPackaged || updater === 'ok');
 
   // GUI 程序的 stdout 在 CI 里经常收不到，结果必须落盘才算数
