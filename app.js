@@ -2035,6 +2035,7 @@ function renderAll() {
   updateMini();
   updateNoteTools();
   updateScoreExportButtons();
+  updateAudioAlignButton();
 }
 
 /* ============================================================
@@ -2533,6 +2534,12 @@ function audioInputUpdateUI() {
   }
   if (stop) stop.disabled = !audioInput.recording;
   if ($('audioInputGainVal')) $('audioInputGainVal').textContent = Math.round(audioInput.gainValue * 100) + '%';
+  updateAudioAlignButton();
+}
+
+function updateAudioAlignButton() {
+  var btn = $('btnAudioAutoAlign');
+  if (btn) btn.disabled = !(state.notes.length >= 3 && edit && edit.srcBuf);
 }
 
 async function refreshAudioInputDevices() {
@@ -2612,6 +2619,59 @@ function offsetAudioBuffer(buf, offsetMs) {
     out.getChannelData(c).set(src.subarray(srcStart, Math.min(src.length, srcStart + outLen - dstStart)), dstStart);
   }
   return out;
+}
+
+
+function audioEnergyAt(buf, seconds) {
+  var data = buf.getChannelData(0);
+  var center = Math.round(seconds * buf.sampleRate);
+  var half = Math.max(32, Math.round(buf.sampleRate * 0.025));
+  var from = Math.max(0, center - half);
+  var to = Math.min(data.length, center + half);
+  if (to <= from) return 0;
+  var sum = 0, peak = 0;
+  for (var i = from; i < to; i += 2) {
+    var v = Math.abs(data[i]);
+    sum += v * v;
+    if (v > peak) peak = v;
+  }
+  return Math.max(peak * 0.35, Math.sqrt(sum / Math.max(1, Math.ceil((to - from) / 2))));
+}
+
+function autoAlignMidiAudio() {
+  if (!edit.srcBuf || state.notes.length < 3) {
+    alert('需要至少 3 个 MIDI 音符和一段音频才能自动对齐。');
+    return;
+  }
+  var notes = state.notes.filter(function (n) { return n.tOff !== null; }).sort(function (a, b) { return a.tOn - b.tOn; });
+  var onsets = [];
+  notes.forEach(function (n) {
+    if (!onsets.length || n.tOn - onsets[onsets.length - 1] > 35) onsets.push(n.tOn);
+  });
+  if (onsets.length < 3) {
+    alert('MIDI 音符起音太密，无法可靠估算对齐偏移。');
+    return;
+  }
+  var bestOffset = 0, bestScore = -Infinity;
+  for (var offset = -500; offset <= 500; offset += 10) {
+    var score = 0, used = 0;
+    onsets.forEach(function (t) {
+      var sec = (t + offset) / 1000;
+      if (sec >= 0 && sec <= edit.srcBuf.duration) {
+        score += audioEnergyAt(edit.srcBuf, sec);
+        used++;
+      }
+    });
+    if (used >= 3) score /= used;
+    if (score > bestScore) { bestScore = score; bestOffset = offset; }
+  }
+  audioInput.latencyMs = Math.max(-500, Math.min(500, audioInput.latencyMs + bestOffset));
+  if ($('audioInputLatency')) $('audioInputLatency').value = audioInput.latencyMs;
+  var aligned = offsetAudioBuffer(edit.srcBuf, bestOffset);
+  loadBuffer(aligned);
+  setWorkspace('edit');
+  audioInputStatus('已自动对齐，估算偏移 ' + (bestOffset >= 0 ? '+' : '') + bestOffset + ' ms。');
+  setPill('MIDI / 音频已对齐', 'on');
 }
 
 async function importAudioRecording(blob) {
@@ -2718,6 +2778,7 @@ function setupAudioInput() {
     audioInput.latencyMs = Math.max(-500, Math.min(500, parseInt(e.target.value, 10) || 0));
     e.target.value = audioInput.latencyMs;
   });
+  $('btnAudioAutoAlign').addEventListener('click', autoAlignMidiAudio);
   if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     navigator.mediaDevices.addEventListener('devicechange', refreshAudioInputDevices);
   }
@@ -3527,10 +3588,11 @@ function loadBuffer(buf) {
   ovPeaks = null;
   updateStatus();
   drawWave();
+  updateAudioAlignButton();
   scheduleSave();
 }
 
-/* ---------- 编辑 ---------- */
+/* ---------- 编辑 */ */
 function selectionRange() {
   if (!edit.sel) return null;
   var a = Math.min(edit.sel[0], edit.sel[1]);
