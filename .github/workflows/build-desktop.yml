@@ -29,11 +29,25 @@ jobs:
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
         run: npm install --no-fund --no-audit
 
+      - name: Check Windows signing configuration
+        shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if ($env:CSC_LINK -and $env:CSC_KEY_PASSWORD) {
+            Write-Host 'Windows code signing is configured'
+          } else {
+            Write-Warning 'Windows signing secrets are missing; artifacts will be unsigned'
+          }
+
       - name: Build installer and portable exe
         working-directory: desktop
         env:
           ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
           ELECTRON_BUILDER_BINARIES_MIRROR: https://npmmirror.com/mirrors/electron-builder-binaries/
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: npx electron-builder --win nsis portable --publish never
 
       - name: Smoke test the packaged app
