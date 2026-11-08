@@ -71,7 +71,10 @@ var midiImport = {
   bpm: 120,
   timeSig: '4/4',
   tracks: [],
-  selected: {}
+  selected: {},
+  muted: {},
+  solo: {},
+  hand: 'all'
 };
 
 var audioInput = {
@@ -2116,8 +2119,7 @@ function renderAll() {
   updateMini();
   updateNoteTools();
   updateScoreExportButtons();
-  updateAudioAlignButton();
-}
+render all anchor
 
 /* ============================================================
    导出
@@ -2392,7 +2394,7 @@ function renderMidiTracks() {
     return;
   }
   midiImport.tracks.forEach(function (tr) {
-    var row = document.createElement('label');
+    var row = document.createElement('div');
     row.className = 'midi-track';
     var checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
@@ -2412,11 +2414,56 @@ function renderMidiTracks() {
     info.appendChild(meta);
     row.appendChild(checkbox);
     row.appendChild(info);
+    var actions = document.createElement('span');
+    actions.className = 'midi-track-actions';
+    var solo = document.createElement('button');
+    solo.type = 'button';
+    solo.className = 'btn mini' + (midiImport.solo[tr.id] ? ' active' : '');
+    solo.textContent = '独奏';
+    solo.addEventListener('click', function () { midiImport.solo[tr.id] = !midiImport.solo[tr.id]; renderMidiTracks(); });
+    var mute = document.createElement('button');
+    mute.type = 'button';
+    mute.className = 'btn mini' + (midiImport.muted[tr.id] ? ' active' : '');
+    mute.textContent = '静音';
+    mute.addEventListener('click', function () { midiImport.muted[tr.id] = !midiImport.muted[tr.id]; renderMidiTracks(); });
+    actions.appendChild(solo);
+    actions.appendChild(mute);
+    row.appendChild(actions);
     host.appendChild(row);
   });
   var selected = midiImport.tracks.filter(function (tr) { return midiImport.selected[tr.id]; });
   $('btnMidiLoad').disabled = !selected.length;
   $('btnMidiClear').disabled = false;
+}
+
+
+function renderMidiCcEditor() {
+  var host = $('midiCcList');
+  if (!host) return;
+  host.textContent = '';
+  var ccs = state.ccs || [];
+  if ($('midiCcSummary')) $('midiCcSummary').textContent = ccs.length ? ccs.length + ' 个 CC 事件' : '当前工程没有 CC 控制器事件';
+  if ($('btnMidiClearCc')) $('btnMidiClearCc').disabled = !ccs.length;
+  ccs.slice(0, 80).forEach(function (cc, index) {
+    var row = document.createElement('div');
+    row.className = 'midi-cc-row';
+    var label = document.createElement('span');
+    label.textContent = 'CC' + cc.cc + ' · ' + (cc.t / 1000).toFixed(2) + 's';
+    var range = document.createElement('input');
+    range.type = 'range'; range.min = 0; range.max = 127; range.value = cc.value;
+    var value = document.createElement('span');
+    value.textContent = cc.value;
+    range.addEventListener('input', function () { cc.value = parseInt(range.value, 10); value.textContent = cc.value; });
+    range.addEventListener('change', function () { $('mCc').textContent = state.ccs.length; scheduleSave(); });
+    var del = document.createElement('button');
+    del.className = 'btn'; del.type = 'button'; del.textContent = '×';
+    del.addEventListener('click', function () { state.ccs.splice(index, 1); renderMidiCcEditor(); $('mCc').textContent = state.ccs.length; scheduleSave(); });
+    row.appendChild(label); row.appendChild(range); row.appendChild(value); row.appendChild(del);
+    host.appendChild(row);
+  });
+  if (ccs.length > 80) {
+    var more = document.createElement('p'); more.className = 'hint'; more.textContent = '仅显示前 80 个事件，完整 CC 仍会随 MIDI 导出。'; host.appendChild(more);
+  }
 }
 
 async function importMIDIFile(file) {
@@ -2431,6 +2478,8 @@ async function importMIDIFile(file) {
     midiImport.timeSig = parsed.timeSig;
     midiImport.tracks = parsed.tracks;
     midiImport.selected = {};
+    midiImport.muted = {};
+    midiImport.solo = {};
     var first = parsed.tracks.find(function (tr) { return tr.noteCount > 0; });
     if (first) midiImport.selected[first.id] = true;
     $('midiImportSummary').textContent = midiImport.fileName + ' · ' + parsed.tracks.length + ' 条轨道 · ' +
@@ -2448,10 +2497,18 @@ async function importMIDIFile(file) {
 }
 
 function loadSelectedMidiTracks() {
-  var chosen = midiImport.tracks.filter(function (tr) { return midiImport.selected[tr.id]; });
+  var soloIds = midiImport.tracks.filter(function (tr) { return midiImport.solo[tr.id]; }).map(function (tr) { return tr.id; });
+  var hand = $('midiHandFilter') ? $('midiHandFilter').value : 'all';
+  midiImport.hand = hand;
+  var chosen = midiImport.tracks.filter(function (tr) {
+    if (!midiImport.selected[tr.id] || midiImport.muted[tr.id]) return false;
+    return !soloIds.length || midiImport.solo[tr.id];
+  });
   var notes = [], ccs = [];
   chosen.forEach(function (tr) {
-    notes = notes.concat(tr.notes);
+    notes = notes.concat(tr.notes.filter(function (n) {
+      return hand === 'all' || (hand === 'right' ? n.pitch >= 60 : n.pitch < 60);
+    }));
     ccs = ccs.concat(tr.ccs);
   });
   if (!notes.length) { alert('所选轨道没有音符。'); return; }
@@ -2472,6 +2529,7 @@ function loadSelectedMidiTracks() {
   $('mNotes').textContent = state.notes.length;
   $('mTime').textContent = state.lastDur.toFixed(1) + 's';
   $('mCc').textContent = state.ccs.length;
+  renderMidiCcEditor();
   noteEdit.selected = -1;
   noteEdit.undo = [];
   noteEdit.redo = [];
@@ -4746,6 +4804,12 @@ $('midiFileInput').addEventListener('change', function (e) {
 });
 $('btnMidiLoad').addEventListener('click', loadSelectedMidiTracks);
 $('btnMidiClear').addEventListener('click', clearMidiImport);
+$('btnMidiClearCc').addEventListener('click', function () {
+  state.ccs = [];
+  $('mCc').textContent = '0';
+  renderMidiCcEditor();
+  scheduleSave();
+});
 $('btnSplit').addEventListener('click', splitAtPlayhead);
 $('btnDelClip').addEventListener('click', deleteSelectedClip);
 $('btnCut').addEventListener('click', cutSelection);
@@ -5512,6 +5576,7 @@ fitOverview();
 setupNoteEditor();
 setupPractice();
 renderMidiTracks();
+renderMidiCcEditor();
 setupWorkspaceNav();
 setupDiagnostics();
 setupAudioInput();
