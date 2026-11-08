@@ -1153,9 +1153,17 @@ function drawRoll() {
   rctx.clearRect(0, 0, geo.w, geo.h);
 
   if (!state.notes.length && !state.recording) {
-    rctx.fillStyle = '#b6b5ad';
+    // 空状态：居中提示 + 一圈虚线，避免大片空白显得像没加载出来
+    rctx.strokeStyle = '#e9efea';
+    rctx.lineWidth = 1;
+    rctx.setLineDash([6, 6]);
+    rctx.strokeRect(10.5, 10.5, Math.max(0, geo.w - 21), Math.max(0, geo.h - 21));
+    rctx.setLineDash([]);
+    rctx.fillStyle = '#8c988f';
     rctx.font = '13px system-ui, sans-serif';
-    rctx.fillText('录一段，这里会显示音符（点击可编辑）', 14, geo.h / 2);
+    rctx.textAlign = 'center';
+    rctx.fillText('录一段，这里会显示音符（点击可编辑）', geo.w / 2, geo.h / 2);
+    rctx.textAlign = 'start';
     return;
   }
 
@@ -3365,9 +3373,16 @@ function drawWave() {
   wctx.clearRect(0, 0, w, h);
 
   if (!edit.srcBuf) {
-    wctx.fillStyle = '#b6b5ad';
+    wctx.strokeStyle = '#e9efea';
+    wctx.lineWidth = 1;
+    wctx.setLineDash([6, 6]);
+    wctx.strokeRect(10.5, 10.5, Math.max(0, w - 21), Math.max(0, h - 21));
+    wctx.setLineDash([]);
+    wctx.fillStyle = '#8c988f';
     wctx.font = '13px system-ui, sans-serif';
-    wctx.fillText('导入音频或载入录音，然后在标尺上拖动框选', 14, h / 2);
+    wctx.textAlign = 'center';
+    wctx.fillText('导入音频或载入录音，然后在标尺上拖动框选', w / 2, h / 2);
+    wctx.textAlign = 'start';
     drawOverview();
     return;
   }

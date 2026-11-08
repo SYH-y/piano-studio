@@ -474,7 +474,8 @@ async function runSmoke(win, outPath) {
 
 /* ------------------------------------------------------------------ 启动 */
 
-if (!app.requestSingleInstanceLock()) {
+// 冒烟模式不抢单实例锁：否则开发机上开着应用时，CI/本地冒烟会静默退出
+if (!SMOKE && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {

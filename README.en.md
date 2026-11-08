@@ -13,7 +13,7 @@ No audio interface · No recording cable · No install · Works offline · Data 
 ![browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%2089%2B-0f6e56)
 ![build](https://img.shields.io/badge/build-none%20required-0f6e56)
 
-Current version: **v1.9.1**. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
+Current version: **v1.10.0**. See [CHANGELOG.md](CHANGELOG.md) for the full release history.
 
 > 中文文档见 [README.md](README.md)
 
