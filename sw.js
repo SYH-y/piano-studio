@@ -12,14 +12,14 @@
 // CACHE 版本号的作用变成「强制丢弃离线副本」：升级到不兼容的改动、
 // 或想手动清掉旧缓存时，改这个字符串即可（activate 里会删掉其它版本）。
 
-const CACHE = 'piano-studio-v1.12.0';
+const CACHE = 'piano-studio-v1.12.1';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
-  './icon.svg',
+  './icon.png',
   './lib/vexflow.js',
   './lib/vexflow-bravura.js',
   './lib/lame.min.js'
