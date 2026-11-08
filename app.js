@@ -3612,7 +3612,7 @@ function loadBuffer(buf) {
   scheduleSave();
 }
 
-/* ---------- 编辑 */ */
+/* ---------- 编辑 */
 function selectionRange() {
   if (!edit.sel) return null;
   var a = Math.min(edit.sel[0], edit.sel[1]);
