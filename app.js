@@ -1227,7 +1227,7 @@ function drawRoll() {
 
   if (!state.notes.length && !state.recording) {
     // 空状态：居中提示 + 一圈虚线，避免大片空白显得像没加载出来
-    rctx.strokeStyle = '#e9efea';
+    rctx.strokeStyle = uiPick('#e9efea', '#2a312e');
     rctx.lineWidth = 1;
     rctx.setLineDash([6, 6]);
     rctx.strokeRect(10.5, 10.5, Math.max(0, geo.w - 21), Math.max(0, geo.h - 21));
@@ -1240,7 +1240,7 @@ function drawRoll() {
     return;
   }
 
-  rctx.strokeStyle = '#eeede7';
+  rctx.strokeStyle = uiPick('#eeede7', '#2b3531');
   rctx.lineWidth = 1;
   for (var p = geo.lo; p <= geo.hi; p++) {
     if (p % 12 === 0) {
@@ -1254,7 +1254,7 @@ function drawRoll() {
 
   rctx.fillStyle = '#b6b5ad';
   rctx.font = '11px system-ui, sans-serif';
-  rctx.strokeStyle = '#e6e5de';
+  rctx.strokeStyle = uiPick('#e6e5de', '#333d38');
   for (var s = 0; s <= Math.ceil(geo.tMax); s++) {
     var sx = (s / geo.tMax) * geo.w;
     rctx.beginPath();
@@ -1273,7 +1273,7 @@ function drawRoll() {
     rctx.fillStyle = selected ? '#0f6e56' : ('rgba(15,110,86,' + (0.2 + v * 0.75).toFixed(2) + ')');
     rctx.fillRect(r.x0, r.y, Math.max(2, r.x1 - r.x0), r.hh);
     if (selected) {
-      rctx.strokeStyle = '#0a4f3c';
+      rctx.strokeStyle = uiPick('#0a4f3c', '#7fe0c0');
       rctx.lineWidth = 1.5;
       rctx.strokeRect(r.x0 + 0.5, r.y + 0.5, Math.max(2, r.x1 - r.x0) - 1, r.hh - 1);
       rctx.fillStyle = '#0a4f3c';
@@ -1285,7 +1285,7 @@ function drawRoll() {
     var now = actx.currentTime - state.playStart;
     if (now >= 0) {
       var px = (now / geo.tMax) * geo.w;
-      rctx.strokeStyle = '#c2453f';
+      rctx.strokeStyle = uiPick('#c2453f', '#e0706a');
       rctx.lineWidth = 1.5;
       rctx.beginPath();
       rctx.moveTo(px, geo.top - 6);
@@ -2498,6 +2498,14 @@ function clearMidiImport() {
 /* ============================================================
    工作区导航与设备诊断
    ============================================================ */
+// 画布配色跟随明暗主题（canvas 里的颜色是画上去的，CSS 管不到）
+function uiIsDark() {
+  return document.documentElement.getAttribute('data-theme') === 'dark';
+}
+function uiPick(light, dark) {
+  return uiIsDark() ? dark : light;
+}
+
 var currentWorkspace = 'performance';
 
 function setWorkspace(name) {
@@ -3344,7 +3352,7 @@ function rebuildCache(w, h) {
 
   var t0 = edit.viewStart, t1 = edit.viewStart + edit.viewDur;
 
-  cc.fillStyle = '#fcfcf9';
+  cc.fillStyle = uiPick('#fcfcf9', '#171d1b');
   cc.fillRect(0, 0, w, RULER_H);
 
   var step = niceStep(edit.viewDur);
@@ -3354,7 +3362,7 @@ function rebuildCache(w, h) {
   for (var t = Math.floor(t0 / step) * step; t <= t1; t += step) {
     var x = (t - t0) / edit.viewDur * w;
     if (x < -40 || x > w + 40) continue;
-    cc.strokeStyle = '#eeede7';
+    cc.strokeStyle = uiPick('#eeede7', '#2b3531');
     cc.beginPath();
     cc.moveTo(Math.round(x) + 0.5, RULER_H);
     cc.lineTo(Math.round(x) + 0.5, h);
@@ -3363,7 +3371,7 @@ function rebuildCache(w, h) {
     cc.fillText(tickLabel(t, step), x + 4, RULER_H / 2);
   }
 
-  cc.strokeStyle = '#e6e5de';
+  cc.strokeStyle = uiPick('#e6e5de', '#333d38');
   cc.beginPath();
   cc.moveTo(0, RULER_H - 0.5);
   cc.lineTo(w, RULER_H - 0.5);
@@ -3446,7 +3454,7 @@ function drawWave() {
   wctx.clearRect(0, 0, w, h);
 
   if (!edit.srcBuf) {
-    wctx.strokeStyle = '#e9efea';
+    wctx.strokeStyle = uiPick('#e9efea', '#2a312e');
     wctx.lineWidth = 1;
     wctx.setLineDash([6, 6]);
     wctx.strokeRect(10.5, 10.5, Math.max(0, w - 21), Math.max(0, h - 21));
@@ -3477,7 +3485,7 @@ function drawWave() {
     if (x1 - x0 > 0.5) {
       wctx.fillStyle = 'rgba(15,110,86,0.12)';
       wctx.fillRect(x0, RULER_H, x1 - x0, h - RULER_H);
-      wctx.strokeStyle = '#0f6e56';
+      wctx.strokeStyle = uiPick('#0f6e56', '#3fb994');
       wctx.lineWidth = 2;
       wctx.beginPath();
       wctx.moveTo(x0, RULER_H); wctx.lineTo(x0, h);
@@ -3504,7 +3512,7 @@ function drawWave() {
 
   var pxp = timeToX(edit.playhead);
   if (pxp >= -60 && pxp <= w + 60) {
-    wctx.strokeStyle = '#d1463f';
+    wctx.strokeStyle = uiPick('#d1463f', '#e0706a');
     wctx.lineWidth = 1.5;
     wctx.beginPath();
     wctx.moveTo(pxp, RULER_H - 2);

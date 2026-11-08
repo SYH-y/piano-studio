@@ -24,10 +24,56 @@
   <div class="drop-box">松开即可导入音频<small>支持 mp3 / wav / m4a / flac / ogg</small></div>
 </div>
 
+<div class="app-shell">
+<aside class="side-rail" id="sideRail">
+  <div class="rail-head">
+    <span class="rail-logo" aria-hidden="true">♪</span>
+    <span class="rail-brandtext"><b>PIANO STUDIO</b><em>电钢琴工作台</em></span>
+    <button class="rail-toggle" id="btnRailToggle" type="button" title="收起侧栏" aria-label="收起侧栏">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4.5 6 8l3.5 3.5"/></svg>
+    </button>
+  </div>
+
+  <div class="rail-label">工作区</div>
+  <nav class="workspace-nav" id="workspaceNav" aria-label="工作区">
+    <button class="workspace-tab active" data-workspace="performance" type="button" title="演奏">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.8" y="4.2" width="14.4" height="11.6" rx="2"/><path d="M7.4 4.2v7.1M12.6 4.2v7.1"/></svg>
+      <span>演奏</span>
+    </button>
+    <button class="workspace-tab" data-workspace="score" type="button" title="制谱">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8.4 14.2V4.6l7.2-1.6v8.4"/><circle cx="6.3" cy="14.2" r="2.1"/><circle cx="13.5" cy="12.6" r="2.1"/></svg>
+      <span>制谱</span>
+    </button>
+    <button class="workspace-tab" data-workspace="edit" type="button" title="剪辑">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 10h1.6M7 6.2v7.6M10.4 3.8v12.4M13.8 7v6M17 9.2v1.6"/></svg>
+      <span>剪辑</span>
+    </button>
+    <button class="workspace-tab" data-workspace="project" type="button" title="工程">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.4h14M3 13.6h14"/><circle cx="7.6" cy="6.4" r="2"/><circle cx="12.6" cy="13.6" r="2"/></svg>
+      <span>工程</span>
+    </button>
+  </nav>
+
+  <div class="rail-foot">
+    <button class="rail-action" id="btnTheme" type="button" title="切换深色 / 浅色">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15.4 12.2A6.2 6.2 0 0 1 7.8 4.6 6.4 6.4 0 1 0 15.4 12.2Z"/></svg>
+      <span id="themeLabel">深色</span>
+    </button>
+    <button class="rail-action" id="btnRailHelp" type="button" title="使用说明">
+      <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.2"/><path d="M8.2 7.9a1.9 1.9 0 1 1 2.5 1.8c-.5.2-.7.6-.7 1.1v.4"/><circle cx="10" cy="13.9" r=".7" fill="currentColor" stroke="none"/></svg>
+      <span>使用说明</span>
+    </button>
+    <div class="rail-ver" id="railVer">v1.11.0</div>
+  </div>
+</aside>
+
+<div class="app-main">
 <header class="topbar">
-  <div class="brand">
-    <div class="logo" aria-hidden="true">♪</div>
-    <div class="btext"><b>PIANO STUDIO</b><em>蓝牙录音 · 实时制谱 · 时间轴剪辑</em></div>
+  <div class="ws-title" id="wsTitle">
+    <b data-ws="performance">演奏</b>
+    <b data-ws="score">制谱</b>
+    <b data-ws="edit">剪辑</b>
+    <b data-ws="project">工程</b>
   </div>
   <div class="grow"></div>
   <span class="saved-hint" id="savedHint"></span>
@@ -53,13 +99,6 @@
   <button class="btn" id="mStop">■</button>
   <span class="mini-info" id="miniInfo"></span>
 </div>
-
-<nav class="workspace-nav" id="workspaceNav" aria-label="工作区">
-  <button class="workspace-tab active" data-workspace="performance" type="button">演奏</button>
-  <button class="workspace-tab" data-workspace="score" type="button">制谱</button>
-  <button class="workspace-tab" data-workspace="edit" type="button">剪辑</button>
-  <button class="workspace-tab" data-workspace="project" type="button">工程</button>
-</nav>
 
 <main class="layout">
   <section>
@@ -427,7 +466,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.10.1</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v1.11.0</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
@@ -454,6 +493,64 @@
       }
     }).catch(function () {});
   })();
+</script>
+</div>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var THEME_KEY = 'pianoStudio.theme';
+  var RAIL_KEY = 'pianoStudio.rail';
+
+  var savedTheme = null, savedRail = null;
+  try { savedTheme = localStorage.getItem(THEME_KEY); savedRail = localStorage.getItem(RAIL_KEY); } catch (e) {}
+  if (savedTheme === 'dark' || savedTheme === 'light') root.setAttribute('data-theme', savedTheme);
+  if (savedRail === 'collapsed') root.setAttribute('data-rail', 'collapsed');
+
+  var themeBtn = document.getElementById('btnTheme');
+  var themeLabel = document.getElementById('themeLabel');
+  function paintTheme() {
+    var dark = root.getAttribute('data-theme') === 'dark';
+    if (themeLabel) themeLabel.textContent = dark ? '浅色' : '深色';
+    if (themeBtn) themeBtn.title = dark ? '切换到浅色主题' : '切换到深色主题';
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', dark ? '#14181a' : '#f2f2ee');
+  }
+  paintTheme();
+  if (themeBtn) {
+    themeBtn.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+      paintTheme();
+    });
+  }
+
+  var railBtn = document.getElementById('btnRailToggle');
+  function paintRail() {
+    var collapsed = root.getAttribute('data-rail') === 'collapsed';
+    if (railBtn) {
+      railBtn.title = collapsed ? '展开侧栏' : '收起侧栏';
+      railBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    }
+  }
+  paintRail();
+  if (railBtn) {
+    railBtn.addEventListener('click', function () {
+      var collapsed = root.getAttribute('data-rail') === 'collapsed';
+      if (collapsed) root.removeAttribute('data-rail');
+      else root.setAttribute('data-rail', 'collapsed');
+      try { localStorage.setItem(RAIL_KEY, collapsed ? 'expanded' : 'collapsed'); } catch (e) {}
+      paintRail();
+      setTimeout(function () { window.dispatchEvent(new Event('resize')); }, 180);
+    });
+  }
+
+  var railHelp = document.getElementById('btnRailHelp');
+  var topHelp = document.getElementById('btnHelp');
+  if (railHelp && topHelp) railHelp.addEventListener('click', function () { topHelp.click(); });
+})();
 </script>
 <script src="lib/vexflow.js"></script>
 <script src="lib/vexflow-bravura.js"></script>
