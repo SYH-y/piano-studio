@@ -35,11 +35,17 @@ jobs:
           CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           RELEASE_BUILD: ${{ startsWith(github.ref, 'refs/tags/') }}
+          # 默认「缺证书只警告」：证书还没买到之前，硬失败会让所有版本都发不出去。
+          # 配好证书后，把仓库 Settings → Variables 的 REQUIRE_SIGNING 设为 true，
+          # 就切换成「发布必须签名」，缺证书直接失败。
+          REQUIRE_SIGNING: ${{ vars.REQUIRE_SIGNING }}
         run: |
           if ($env:CSC_LINK -and $env:CSC_KEY_PASSWORD) {
             Write-Host 'Windows code signing is configured'
+          } elseif ($env:RELEASE_BUILD -eq 'true' -and $env:REQUIRE_SIGNING -eq 'true') {
+            throw 'REQUIRE_SIGNING=true 且缺少签名证书：请配置 WINDOWS_CERTIFICATE_BASE64 / WINDOWS_CERTIFICATE_PASSWORD，或把该变量改回 false'
           } elseif ($env:RELEASE_BUILD -eq 'true') {
-            throw '发布 Tag 缺少 WINDOWS_CERTIFICATE_BASE64 或 WINDOWS_CERTIFICATE_PASSWORD，已阻止生成未签名发布包'
+            Write-Warning '发布 Tag 未配置签名证书，将生成未签名安装包（首次运行会有 SmartScreen 提示）。要强制签名，请设置仓库变量 REQUIRE_SIGNING=true'
           } else {
             Write-Warning 'Windows signing secrets are missing; workflow_dispatch 将生成未签名测试包'
           }
@@ -57,9 +63,20 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         working-directory: desktop
         shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          REQUIRE_SIGNING: ${{ vars.REQUIRE_SIGNING }}
         run: |
           $files = @(Get-ChildItem dist -Filter 'PianoStudio-*.exe')
           if ($files.Count -lt 2) { throw '未找到完整的 Windows 安装包和便携版产物' }
+
+          # 没配证书时，产物本来就是未签名的，这里不能当成错误；
+          # 只有「配了证书」或「显式要求强制签名」时才严格校验。
+          if (-not $env:CSC_LINK -and $env:REQUIRE_SIGNING -ne 'true') {
+            Write-Warning '未配置签名证书，跳过签名校验（产物为未签名版本）'
+            exit 0
+          }
+
           foreach ($file in $files) {
             $signature = Get-AuthenticodeSignature -FilePath $file.FullName
             if ($signature.Status -ne 'Valid') {
