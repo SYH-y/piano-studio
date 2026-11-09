@@ -33,7 +33,7 @@ jobs:
 
           desktop = json.load(open('desktop/package.json', encoding='utf-8'))['version']
           source = open('version.js', encoding='utf-8').read()
-          match = re.search(r"PIANO_STUDIO_VERSION\\s*=\\s*['\"]([^'\"]+)", source)
+          match = re.search(r"PIANO_STUDIO_VERSION\s*=\s*['\"]([^'\"]+)", source)
           if not match:
               print('::error::version.js 没有找到 PIANO_STUDIO_VERSION')
               sys.exit(1)
