@@ -3083,6 +3083,7 @@ var RULER_H = 26;
 
 var edit = {
   srcBuf: null,
+  audioDirty: false,
   clips: [],
   nextId: 1,
   sel: null,
@@ -3674,10 +3675,12 @@ function beginOp() {
 function commitOp() {
   if (!edit.pending) return;
   edit.pending.clipsAfter = cloneClips();
+  var changedAudio = edit.pending.ranges && edit.pending.ranges.length > 0;
   edit.undo.push(edit.pending);
   if (edit.undo.length > 30) edit.undo.shift();
   edit.redo.length = 0;
   edit.pending = null;
+  if (changedAudio) edit.audioDirty = true;
   scheduleSave();
 }
 
@@ -3687,6 +3690,7 @@ function abortOp() {
 
 function applyPatches(entry, which) {
   if (!entry.ranges || !entry.ranges.length) return;
+  edit.audioDirty = true;
   for (var i = 0; i < entry.ranges.length; i++) {
     var r = entry.ranges[i];
     var ch = edit.srcBuf.getChannelData(r.ch);
@@ -3737,6 +3741,8 @@ function afterChange() {
 /* ---------- 载入 ---------- */
 function loadBuffer(buf) {
   edit.srcBuf = buf;
+  edit.audioDirty = true;
+  autosaveAudioBlob = null;
   edit.clips = [{ id: nid(), a: 0, b: buf.length, start: 0 }];
   edit.sel = null;
   edit.selClip = null;
@@ -4068,6 +4074,8 @@ function pasteAtPlayhead() {
   });
 
   edit.srcBuf = newBuf;
+  edit.audioDirty = true;
+  autosaveAudioBlob = null;
   edit.peakCache = { buf: null, val: 0 };
   ovPeaks = null;
 
@@ -5035,6 +5043,8 @@ var DB_NAME = 'piano-desk';
 var DB_STORE = 'projects';
 var saveTimer = null;
 var pendingSnapshot = null;
+// Reuse the last autosaved audio blob when only metadata or clip layout changed.
+var autosaveAudioBlob = null;
 
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -5256,11 +5266,22 @@ function doAutosave() {
   if (!state.notes.length && !edit.srcBuf) return;
 
   var meta = serializeMeta();
-  if (edit.srcBuf) {
-    try { meta.audioBlob = encodeWav(edit.srcBuf); } catch (e) {}
+  var shouldSaveAudio = !!edit.srcBuf && (edit.audioDirty || !autosaveAudioBlob);
+  if (shouldSaveAudio) {
+    try {
+      meta.audioBlob = encodeWav(edit.srcBuf);
+    } catch (e) {
+      shouldSaveAudio = false;
+    }
+  } else if (edit.srcBuf && autosaveAudioBlob) {
+    meta.audioBlob = autosaveAudioBlob;
   }
 
   idbPut('autosave', meta).then(function () {
+    if (shouldSaveAudio) {
+      autosaveAudioBlob = meta.audioBlob;
+      edit.audioDirty = false;
+    }
     var el = $('savedHint');
     if (el) {
       var d = new Date();
@@ -5337,10 +5358,14 @@ async function applyProject(snap) {
     edit.viewDur = Math.max(timelineDur(), 0.5);
     edit.cacheKey = '';
     ovPeaks = null;
+    edit.audioDirty = !snap.audioBlob;
+    autosaveAudioBlob = snap.audioBlob || null;
   } else {
     edit.srcBuf = null;
     edit.clips = [];
     edit.viewDur = 0;
+    edit.audioDirty = false;
+    autosaveAudioBlob = null;
   }
 
   updateStatus();
