@@ -129,10 +129,15 @@ function setupBluetooth(contents) {
     const url = wc && wc.getURL ? wc.getURL() : '';
     return !url || url.startsWith(SCHEME + '://');
   };
+  // Only grant permissions the app actually needs. Keeping this allow-list
+  // prevents a future UI dependency from silently broadening Electron privileges.
+  const ALLOWED_PERMISSIONS = new Set(['bluetooth', 'media']);
   ses.setPermissionRequestHandler((wc, permission, callback) => {
-    callback(fromOurApp(wc));
+    callback(fromOurApp(wc) && ALLOWED_PERMISSIONS.has(permission));
   });
-  ses.setPermissionCheckHandler((wc) => fromOurApp(wc));
+  ses.setPermissionCheckHandler((wc, permission) => (
+    fromOurApp(wc) && ALLOWED_PERMISSIONS.has(permission)
+  ));
   ses.setDevicePermissionHandler((details) => details.deviceType === 'bluetooth');
 
   contents.on('select-bluetooth-device', (event, deviceList, callback) => {
