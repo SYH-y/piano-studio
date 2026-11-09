@@ -26,6 +26,24 @@ jobs:
       - name: Check JavaScript syntax
         run: node --check app.js
 
+      - name: Check web and desktop versions match
+        run: |
+          python - <<'PY'
+          import json, re, sys
+
+          desktop = json.load(open('desktop/package.json', encoding='utf-8'))['version']
+          source = open('version.js', encoding='utf-8').read()
+          match = re.search(r"PIANO_STUDIO_VERSION\s*=\s*['\"]([^'\"]+)", source)
+          if not match:
+              print('::error::version.js 没有找到 PIANO_STUDIO_VERSION')
+              sys.exit(1)
+          web = match.group(1)
+          if web != desktop:
+              print(f'::error::网页版本 {web} 与桌面版本 {desktop} 不一致')
+              sys.exit(1)
+          print(f'版本号一致：{web}')
+          PY
+
       - name: Check manifest icons match real files
         run: |
           # 两个坑都真实发生过，所以一起守住：
