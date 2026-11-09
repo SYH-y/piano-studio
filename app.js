@@ -5272,6 +5272,7 @@ function doAutosave() {
       meta.audioBlob = encodeWav(edit.srcBuf);
     } catch (e) {
       shouldSaveAudio = false;
+      if (autosaveAudioBlob) meta.audioBlob = autosaveAudioBlob;
     }
   } else if (edit.srcBuf && autosaveAudioBlob) {
     meta.audioBlob = autosaveAudioBlob;
