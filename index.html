@@ -336,7 +336,8 @@
 
     <div class="card tone-card" data-workspace="performance project">
       <h3>音色与混音</h3>
-      <button class="btn wide" id="btnSamples" style="margin-bottom:12px;">加载真实钢琴采样</button>
+      <button class="btn wide" id="btnSamples" style="margin-bottom:8px;">加载真实钢琴采样</button>
+      <div class="hint" id="toneHint" style="margin-bottom:12px;">首次打开会自动加载真实钢琴采样（约 1 MB）；加载完成前会用合成音色顶替，听起来偏电子。</div>
       <div class="field">
         <label>混响 <b id="wetVal">38%</b></label>
         <input type="range" id="wet" min="0" max="100" value="38">

@@ -251,7 +251,9 @@ async function loadSamples() {
   if (actx.state === 'suspended') actx.resume();
 
   var btn = $('btnSamples');
+  var hint = $('toneHint');
   btn.disabled = true;
+  if (hint) hint.textContent = '正在加载真实钢琴采样…（加载完成前先用合成音色顶替）';
 
   var pitches = [];
   for (var p = 21; p <= 108; p += 2) pitches.push(p);
@@ -275,6 +277,11 @@ async function loadSamples() {
   samplesReady = samples.size > 20;
   btn.textContent = samplesReady ? '真实采样已就绪（' + samples.size + ' 键）' : '加载失败，改用合成音色';
   btn.disabled = false;
+  if (hint) {
+    hint.textContent = samplesReady
+      ? '当前音色：真实钢琴采样（' + samples.size + ' 键）'
+      : '采样加载失败，当前为合成音色（较电子）。检查网络后点上面的按钮重试。';
+  }
 }
 
 /* ============================================================
@@ -5513,6 +5520,20 @@ $('btnPrintScore').addEventListener('click', printScore);
 $('scoreTitle').addEventListener('input', updatePrintHeading);
 $('scoreAuthor').addEventListener('input', updatePrintHeading);
 $('btnSamples').addEventListener('click', loadSamples);
+
+// 采样改为自动加载：此前只有手动点「加载真实钢琴采样」才会用真实音色，
+// 不点就一直走 6 个正弦波的合成音（听起来像电子琴，和钢琴差很远）。
+// 44 个采样共约 1.1 MB，进页面就后台拉，加载完自动切过去。
+var samplesAutoTried = false;
+function autoLoadSamples() {
+  if (samplesAutoTried || samplesReady) return;
+  samplesAutoTried = true;
+  loadSamples();
+}
+['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
+  document.addEventListener(ev, autoLoadSamples, { once: true, passive: true });
+});
+setTimeout(autoLoadSamples, 1200);
 
 $('btnRebuild').addEventListener('click', function () {
   if (!state.notes.length) return;
