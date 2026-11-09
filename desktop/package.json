@@ -37,6 +37,7 @@
           "index.html",
           "styles.css",
           "app.js",
+          "version.js",
           "icon.svg",
           "icon.png",
           "icon-512.png",
