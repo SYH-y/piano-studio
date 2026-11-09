@@ -3084,6 +3084,7 @@ var RULER_H = 26;
 var edit = {
   srcBuf: null,
   audioDirty: false,
+  audioRevision: 0,
   clips: [],
   nextId: 1,
   sel: null,
@@ -3680,7 +3681,10 @@ function commitOp() {
   if (edit.undo.length > 30) edit.undo.shift();
   edit.redo.length = 0;
   edit.pending = null;
-  if (changedAudio) edit.audioDirty = true;
+  if (changedAudio) {
+    edit.audioDirty = true;
+    edit.audioRevision += 1;
+  }
   scheduleSave();
 }
 
@@ -3691,6 +3695,7 @@ function abortOp() {
 function applyPatches(entry, which) {
   if (!entry.ranges || !entry.ranges.length) return;
   edit.audioDirty = true;
+  edit.audioRevision += 1;
   for (var i = 0; i < entry.ranges.length; i++) {
     var r = entry.ranges[i];
     var ch = edit.srcBuf.getChannelData(r.ch);
@@ -3742,6 +3747,7 @@ function afterChange() {
 function loadBuffer(buf) {
   edit.srcBuf = buf;
   edit.audioDirty = true;
+  edit.audioRevision += 1;
   autosaveAudioBlob = null;
   edit.clips = [{ id: nid(), a: 0, b: buf.length, start: 0 }];
   edit.sel = null;
@@ -4075,6 +4081,7 @@ function pasteAtPlayhead() {
 
   edit.srcBuf = newBuf;
   edit.audioDirty = true;
+  edit.audioRevision += 1;
   autosaveAudioBlob = null;
   edit.peakCache = { buf: null, val: 0 };
   ovPeaks = null;
@@ -5266,6 +5273,7 @@ function doAutosave() {
   if (!state.notes.length && !edit.srcBuf) return;
 
   var meta = serializeMeta();
+  var capturedAudioRevision = edit.audioRevision;
   var shouldSaveAudio = !!edit.srcBuf && (edit.audioDirty || !autosaveAudioBlob);
   if (shouldSaveAudio) {
     try {
@@ -5279,7 +5287,7 @@ function doAutosave() {
   }
 
   idbPut('autosave', meta).then(function () {
-    if (shouldSaveAudio) {
+    if (shouldSaveAudio && edit.audioRevision === capturedAudioRevision) {
       autosaveAudioBlob = meta.audioBlob;
       edit.audioDirty = false;
     }
@@ -5359,12 +5367,14 @@ async function applyProject(snap) {
     edit.viewDur = Math.max(timelineDur(), 0.5);
     edit.cacheKey = '';
     ovPeaks = null;
+    edit.audioRevision += 1;
     edit.audioDirty = !snap.audioBlob;
     autosaveAudioBlob = snap.audioBlob || null;
   } else {
     edit.srcBuf = null;
     edit.clips = [];
     edit.viewDur = 0;
+    edit.audioRevision += 1;
     edit.audioDirty = false;
     autosaveAudioBlob = null;
   }
