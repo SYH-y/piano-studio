@@ -10,4 +10,6 @@ test('demo and tie demo load', async ({ page }) => {
   await expect(page.locator('#roll')).toBeVisible();
   await expect(page.locator('#staffHost')).toBeVisible();
   await expect(page.locator('#jianpuHost')).toBeVisible();
+  const footerVersion = await page.locator('#verTag').textContent();
+  await expect(page.locator('#railVer')).toHaveText(footerVersion);
 });
