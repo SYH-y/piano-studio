@@ -64,7 +64,7 @@
       <svg class="ws-ico" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.2"/><path d="M8.2 7.9a1.9 1.9 0 1 1 2.5 1.8c-.5.2-.7.6-.7 1.1v.4"/><circle cx="10" cy="13.9" r=".7" fill="currentColor" stroke="none"/></svg>
       <span>使用说明</span>
     </button>
-    <div class="rail-ver" id="railVer">v1.12.5</div>
+    <div class="rail-ver" id="railVer">v—</div>
   </div>
 </aside>
 
@@ -467,7 +467,7 @@
 </div>
 
 <div class="foot">
-  <span>PIANO STUDIO <span class="mono" id="verTag">v1.12.5</span></span>
+  <span>PIANO STUDIO <span class="mono" id="verTag">v—</span></span>
   <span class="dot">·</span>
   <span>代码 MIT，钢琴采样 CC BY 3.0</span>
   <span class="dot">·</span>
@@ -552,6 +552,17 @@
   var topHelp = document.getElementById('btnHelp');
   if (railHelp && topHelp) railHelp.addEventListener('click', function () { topHelp.click(); });
 })();
+</script>
+<script src="version.js"></script>
+<script>
+  (function () {
+    var version = window.PIANO_STUDIO_VERSION || 'dev';
+    var label = 'v' + version;
+    var rail = document.getElementById('railVer');
+    var footer = document.getElementById('verTag');
+    if (rail) rail.textContent = label;
+    if (footer) footer.textContent = label;
+  })();
 </script>
 <script src="lib/vexflow.js"></script>
 <script src="lib/vexflow-bravura.js"></script>
