@@ -2,13 +2,13 @@
 
 # PIANO STUDIO
 
-**电钢琴工作台 · 一个网页（或一个 App），从弹奏到成品**
+**离线优先的电钢琴录音、练习、制谱与音频剪辑工作台**
 
-用 Web Bluetooth 直连电钢琴的 BLE-MIDI 通道，边弹边出五线谱与简谱；
-带练习中心、MIDI 导入、多片段时间轴剪辑、麦克风 / 线路录音；
-最后导出 MIDI / WAV / MP3，或把谱面导成 PNG 与 PDF。
+支持 Web Bluetooth BLE-MIDI 与 USB-MIDI，边弹边生成五线谱和简谱；
+内置练习中心、标准 MIDI 导入、多片段音频时间轴、麦克风 / 声卡录音，
+可导出 MIDI / WAV / MP3，以及 PNG / PDF 谱面。
 
-不需要声卡 · 不需要内录线 · 不需要装任何东西 · 全程离线 · 数据不出本机
+浏览器直接用，也提供 Windows 桌面版；无需后端，数据保存在本机，断网也能工作。
 
 ![license](https://img.shields.io/badge/license-MIT-0f6e56)
 ![browser](https://img.shields.io/badge/browser-Chrome%20%7C%20Edge%2089%2B-0f6e56)
