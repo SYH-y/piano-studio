@@ -57,14 +57,16 @@ LGPL-3.0 全文见 <https://www.gnu.org/licenses/lgpl-3.0.html>。
 
 ---
 
-## FluidR3_GM 钢琴采样
+## Salamander Grand Piano 钢琴采样
 
-- 目录：`samples/`（44 个 mp3，覆盖 A0–C8，隔半音取样）
+- 目录：`samples/`（30 个 mp3，覆盖 A0–C8，每 3 个半音取样）
 - 用途：网页里的真实钢琴音色
 - 许可：**Creative Commons Attribution 3.0 (CC BY 3.0)**
-- 原始音源：FluidR3_GM.sf2，作者 Frank Wen
-- MP3 版本来自：<https://github.com/gleitz/midi-js-soundfonts>
-  （FluidR3_GM / acoustic_grand_piano-mp3）
+- 录制：Alexander Holm（Salamander Grand Piano V3，Yamaha C5）
+- 分发版本来自 Tone.js 的音频资源：<https://tonejs.github.io/audio/salamander/>
+- 原始采样集：<https://archive.org/details/SalamanderGrandPianoV3>
+- 改动说明：本项目只做「截取前 6 秒 + 统一增益 + 文件名改为降号音名」，
+  未改变音高与音色
 
 按 CC BY 3.0 的要求，使用这些采样时须保留上述署名。
 许可证全文：<https://creativecommons.org/licenses/by/3.0/>

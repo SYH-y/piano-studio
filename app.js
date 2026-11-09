@@ -35,7 +35,7 @@ var state = {
   timeSig: '4/4',
   gridDiv: 2,
   keyOverride: 'auto',
-  wet: 0.38,
+  wet: 0.24,
   vol: 0.8,
   view: 'roll'
 };
@@ -96,9 +96,27 @@ var audioInput = {
    音频引擎
    ============================================================ */
 var actx = null, live = null;
-var samples = new Map();
+var samples = new Map();          // 音高 -> 处理过的采样
 var samplesReady = false;
+var samplesLoading = false;
 var activeNodes = [];
+
+/* 采样集：Salamander Grand Piano（真实三角钢琴录音，CC BY 3.0）。
+ *
+ * 每 3 个半音一个采样，中间的音用 playbackRate 变速补齐。
+ * 和「每个音切一小段」的音源相比，这里的低音有二十多秒的自然衰减，
+ * 抬键之前一直是琴弦自己在响，听感才像真钢琴。
+ * 只保留前 6 秒（再往后只剩极弱的尾音），30 个采样合计约 60 MB 内存。
+ */
+var SAMPLE_FILES = [
+  'A0', 'C1', 'Eb1', 'Gb1', 'A1', 'C2', 'Eb2', 'Gb2', 'A2', 'C3', 'Eb3', 'Gb3',
+  'A3', 'C4', 'Eb4', 'Gb4', 'A4', 'C5', 'Eb5', 'Gb5', 'A5', 'C6', 'Eb6', 'Gb6',
+  'A6', 'C7', 'Eb7', 'Gb7', 'A7', 'C8'
+];
+var SAMPLE_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+var SAMPLE_KEEP_SEC = 6;
+var SAMPLE_TARGET_PEAK = 0.9;
+var sampleCtx = null;             // 专用于解码的 44.1k 离线上下文
 
 function stopAllSound() {
   for (var i = 0; i < activeNodes.length; i++) {
@@ -117,13 +135,43 @@ function trackNode(node) {
   return node;
 }
 
+/* 混响脉冲响应。
+ *
+ * 之前直接用白噪声乘一条衰减曲线，听起来像「嘶——」的噪声尾巴，不像房间。
+ * 真实房间的高频先被空气和墙面吸收，所以这里对噪声做两级一阶低通，
+ * 再加几个早期反射——声音才有「先到墙、再回来」的空间感。
+ */
 function makeIR(ac, seconds, decay) {
   var rate = ac.sampleRate, len = Math.floor(rate * seconds);
   var buf = ac.createBuffer(2, len, rate);
+  var taps = [[0.011, 0.55], [0.019, -0.42], [0.031, 0.34], [0.047, -0.24], [0.071, 0.16]];
+
   for (var c = 0; c < 2; c++) {
     var d = buf.getChannelData(c);
+    var lp = 0, lp2 = 0;
     for (var i = 0; i < len; i++) {
-      d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, decay);
+      var n = Math.random() * 2 - 1;
+      lp += 0.32 * (n - lp);
+      lp2 += 0.09 * (lp - lp2);
+      d[i] = lp2 * Math.pow(1 - i / len, decay);
+    }
+    for (var k = 0; k < taps.length; k++) {
+      var idx = Math.floor(taps[k][0] * rate) + (c ? 11 : 0);
+      if (idx < len) d[idx] += taps[k][1];
+    }
+  }
+
+  // 拉回统一能量，改 IR 长度不至于让湿声忽大忽小
+  var energy = 0;
+  for (var ch = 0; ch < 2; ch++) {
+    var dd = buf.getChannelData(ch);
+    for (var j = 0; j < dd.length; j++) energy += dd[j] * dd[j];
+  }
+  var scale = 12 / Math.sqrt(energy / 2 + 1e-9);
+  if (scale > 0 && scale < 40) {
+    for (var c2 = 0; c2 < 2; c2++) {
+      var d2 = buf.getChannelData(c2);
+      for (var m = 0; m < d2.length; m++) d2[m] *= scale;
     }
   }
   return buf;
@@ -201,6 +249,14 @@ function synthVoice(ac, outs, t, freq, vel, dur, rel) {
   return bus;
 }
 
+function samplePitch(name) {
+  var pc = SAMPLE_PC[name.charAt(0)];
+  var i = 1, acc = 0;
+  if (name.charAt(1) === 'b') { acc = -1; i = 2; }
+  else if (name.charAt(1) === '#') { acc = 1; i = 2; }
+  return (parseInt(name.slice(i), 10) + 1) * 12 + pc + acc;
+}
+
 function nearestSample(pitch) {
   var best = null, bestD = 999;
   samples.forEach(function (buf, key) {
@@ -208,6 +264,48 @@ function nearestSample(pitch) {
     if (d < bestD) { bestD = d; best = key; }
   });
   return best;
+}
+
+// 只留前 6 秒，末尾 0.4 秒淡出，避免硬切出「咔」的一声
+function trimAndFade(buf) {
+  var sr = buf.sampleRate;
+  var len = Math.min(buf.length, Math.round(SAMPLE_KEEP_SEC * sr));
+  var chs = buf.numberOfChannels;
+  var out = sampleCtx.createBuffer(chs, len, sr);
+  var fade = Math.min(Math.round(0.4 * sr), Math.floor(len * 0.2));
+  for (var c = 0; c < chs; c++) {
+    var src = buf.getChannelData(c);
+    var dst = out.getChannelData(c);
+    dst.set(src.subarray(0, len));
+    for (var i = 0; i < fade; i++) dst[len - 1 - i] *= i / fade;
+  }
+  return out;
+}
+
+/* 整套采样共用一个增益，而不是每个音各归各的峰值。
+ * 真钢琴本来就是低音厚、高音薄，逐音拉平会让高音变得又尖又响。
+ * 旧采样峰值只有 0.02–0.08（-28 dB 左右），这一套是 0.08–0.31，
+ * 统一抬到 0.9 之后才是正常音量。 */
+function normalizeSampleSet() {
+  var peak = 0;
+  samples.forEach(function (buf) {
+    for (var c = 0; c < buf.numberOfChannels; c++) {
+      var d = buf.getChannelData(c);
+      for (var i = 0; i < d.length; i++) {
+        var v = d[i] < 0 ? -d[i] : d[i];
+        if (v > peak) peak = v;
+      }
+    }
+  });
+  if (peak < 0.0005) return;
+  var k = SAMPLE_TARGET_PEAK / peak;
+  if (k > 6) k = 6;                      // 别把底噪一起放大
+  samples.forEach(function (buf) {
+    for (var c = 0; c < buf.numberOfChannels; c++) {
+      var d = buf.getChannelData(c);
+      for (var i = 0; i < d.length; i++) d[i] *= k;
+    }
+  });
 }
 
 function sampleVoice(ac, outs, t, pitch, vel, dur, rel) {
@@ -218,16 +316,24 @@ function sampleVoice(ac, outs, t, pitch, vel, dur, rel) {
   src.buffer = samples.get(key);
   src.playbackRate.value = Math.pow(2, (pitch - key) / 12);
 
+  // 力度不只改音量，还要改亮度：弱奏时高次泛音少，音色发暗。
+  // 单层采样没有力度分层，用一阶低通模拟，听着才不像「同一个音按小声点」
+  var lp = ac.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.Q.value = 0.4;
+  lp.frequency.value = Math.min(16000, 900 + Math.pow(vel / 127, 1.5) * 13000);
+
   var g = ac.createGain();
-  var amp = Math.pow(vel / 127, 1.1) * 0.9;
+  var amp = Math.pow(vel / 127, 1.35) * 0.5;
   var end = t + Math.max(dur, 0.06);
 
   g.gain.setValueAtTime(0.0001, t);
-  g.gain.linearRampToValueAtTime(amp, t + 0.004);
+  g.gain.linearRampToValueAtTime(amp, t + 0.006);
   g.gain.setValueAtTime(amp, end);
   g.gain.exponentialRampToValueAtTime(0.0001, end + rel);
 
-  src.connect(g);
+  src.connect(lp);
+  lp.connect(g);
   g.connect(outs.dry);
   g.connect(outs.wet);
   src.start(t);
@@ -246,42 +352,65 @@ function playTone(ac, outs, t, pitch, vel, dur, rel) {
   return synthVoice(ac, outs, t, freqOf(pitch), vel, dur, rel);
 }
 
+// 解码用固定 44.1 kHz 的离线上下文，不跟着声卡跑（48 kHz 会多占 20% 内存）
+function ensureSampleCtx() {
+  if (!sampleCtx) {
+    var Offline = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    sampleCtx = new Offline(2, 1, 44100);
+  }
+  return sampleCtx;
+}
+
 async function loadSamples() {
+  if (samplesLoading) return;
+  samplesLoading = true;
+
   initLive();
-  if (actx.state === 'suspended') actx.resume();
+  try { if (actx.state === 'suspended') actx.resume(); } catch (e) {}
+  ensureSampleCtx();
 
   var btn = $('btnSamples');
   var hint = $('toneHint');
-  btn.disabled = true;
-  if (hint) hint.textContent = '正在加载真实钢琴采样…（加载完成前先用合成音色顶替）';
+  if (btn) { btn.disabled = true; btn.textContent = '加载中 0%'; }
+  if (hint) hint.textContent = '正在加载真实钢琴采样…（30 个，约 2 MB）';
 
-  var pitches = [];
-  for (var p = 21; p <= 108; p += 2) pitches.push(p);
+  samples.clear();
+  var queue = SAMPLE_FILES.slice();
+  var total = queue.length, doneCount = 0, failed = 0;
 
-  var ok = 0;
-  for (var i = 0; i < pitches.length; i++) {
-    var pc = pitches[i] % 12;
-    var nm = FLAT[pc] + (Math.floor(pitches[i] / 12) - 1);
-    try {
-      var res = await fetch('samples/' + nm + '.mp3');
-      if (res.ok) {
+  async function worker() {
+    while (queue.length) {
+      var name = queue.shift();
+      try {
+        var res = await fetch('samples/' + name + '.mp3');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         var raw = await res.arrayBuffer();
-        var buf = await actx.decodeAudioData(raw);
-        samples.set(pitches[i], buf);
-        ok++;
+        var buf = await sampleCtx.decodeAudioData(raw);
+        samples.set(samplePitch(name), trimAndFade(buf));
+      } catch (e) {
+        failed++;
       }
-    } catch (e) {}
-    btn.textContent = '加载中 ' + Math.round((i + 1) / pitches.length * 100) + '%';
+      doneCount++;
+      if (btn) btn.textContent = '加载中 ' + Math.round(doneCount / total * 100) + '%';
+    }
   }
 
-  samplesReady = samples.size > 20;
-  btn.textContent = samplesReady ? '真实采样已就绪（' + samples.size + ' 键）' : '加载失败，改用合成音色';
-  btn.disabled = false;
+  // 4 路并发：本地服务几乎瞬间完成，同时不会把几十个请求一次性压上去
+  await Promise.all([worker(), worker(), worker(), worker()]);
+
+  normalizeSampleSet();
+  samplesReady = samples.size >= 20;
+
+  if (btn) {
+    btn.textContent = samplesReady ? '重新加载真实钢琴采样' : '重新加载（当前为合成音色）';
+    btn.disabled = false;
+  }
   if (hint) {
     hint.textContent = samplesReady
-      ? '当前音色：真实钢琴采样（' + samples.size + ' 键）'
-      : '采样加载失败，当前为合成音色（较电子）。检查网络后点上面的按钮重试。';
+      ? '当前音色：真实钢琴采样（' + samples.size + ' 键，Salamander 三角钢琴录音）'
+      : '采样加载失败（' + failed + ' 个文件读取失败），当前为合成音色。确认 samples 目录完整后点上面的按钮重试。';
   }
+  samplesLoading = false;
 }
 
 /* ============================================================
@@ -5523,7 +5652,7 @@ $('btnSamples').addEventListener('click', loadSamples);
 
 // 采样改为自动加载：此前只有手动点「加载真实钢琴采样」才会用真实音色，
 // 不点就一直走 6 个正弦波的合成音（听起来像电子琴，和钢琴差很远）。
-// 44 个采样共约 1.1 MB，进页面就后台拉，加载完自动切过去。
+// 30 个采样共约 2 MB，进页面就后台拉，加载完自动切过去。
 var samplesAutoTried = false;
 function autoLoadSamples() {
   if (samplesAutoTried || samplesReady) return;
@@ -5533,7 +5662,7 @@ function autoLoadSamples() {
 ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) {
   document.addEventListener(ev, autoLoadSamples, { once: true, passive: true });
 });
-setTimeout(autoLoadSamples, 1200);
+setTimeout(autoLoadSamples, 400);
 
 $('btnRebuild').addEventListener('click', function () {
   if (!state.notes.length) return;
@@ -5756,6 +5885,19 @@ if (new URLSearchParams(location.search).has('idbtest')) {
 
 if (new URLSearchParams(location.search).has('selftest')) {
   try { runSelfTest(); } catch (e) { document.title = 'SELFTEST CRASH ' + e.message; }
+}
+
+// ?debug 打开一个只读探针，方便用 CDP / 控制台核对音色是否真的走了采样
+if (new URLSearchParams(location.search).has('debug')) {
+  window.__piano = {
+    state: state,
+    samples: samples,
+    isReady: function () { return samplesReady; },
+    load: loadSamples,
+    render: renderOffline,
+    playTone: playTone,
+    buildGraph: buildGraph
+  };
 }
 
 setPill('未连接');

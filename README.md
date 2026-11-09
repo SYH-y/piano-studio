@@ -20,7 +20,7 @@
 
 </div>
 
-当前版本：**v1.12.7**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.12.8**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 <details>
 <summary><b>现在能做什么（点开）</b></summary>
@@ -150,7 +150,8 @@ MIDI 文件也可以直接导入。导入后会列出各条轨道，选择一条
 顶部有「演奏 / 制谱 / 剪辑 / 工程」四个工作区：演奏页保留钢琴、录音、卷帘和实时谱面；制谱页放大排版并导出 PNG / PDF；剪辑页只放时间轴；工程页放工程管理与设备诊断。
 演奏页还支持选择麦克风或声卡线路输入，显示实时电平和削波状态，录音停止后自动载入剪辑器，并可用毫秒偏移做延迟校准。
 
-音色来自本地 44 个 FluidR3_GM 真实钢琴采样（A0–C8 隔半音取样，中间用变速补齐），
+音色来自本地 30 个 Salamander 三角钢琴真实录音采样（A0–C8 每 3 个半音一个，中间用变速补齐），
+低音采样带二十多秒自然衰减，抬键前一直是琴弦自己在响；力度同时控制音量和高频亮度。
 音源加载失败时自动退回内置合成音色，不会哑掉。混响是实时卷积生成，不加载外部脉冲文件。
 
 ### 四、音频剪辑
@@ -430,8 +431,9 @@ handleMessage(list[i].msg, arrival + off);   // 到达时刻 + 包内偏移
 
 ### 音频引擎
 
-- **采样播放**：`AudioBufferSourceNode` + `playbackRate` 变速，44 个采样覆盖 A0–C8
-- **混响**：用噪声衰减实时生成脉冲响应，喂给 `ConvolverNode`，不依赖外部 IR 文件
+- **采样播放**：`AudioBufferSourceNode` + `playbackRate` 变速，30 个采样覆盖 A0–C8
+- **力度响应**：音量按力度指数缩放，同时用低通把弱奏的高频压暗（单层采样模拟力度分层）
+- **混响**：用低频衰减的噪声加早期反射实时生成脉冲响应，喂给 `ConvolverNode`，不依赖外部 IR 文件
 - **限幅**：总线末端挂一个 `DynamicsCompressorNode`，防止和弦叠加时削波
 - **离线渲染**：导出时用 `OfflineAudioContext` 比实时快得多地算完整段
 
@@ -501,7 +503,7 @@ handleMessage(list[i].msg, arrival + off);   // 到达时刻 + 包内偏移
 |---|---|---|
 | 踏板数据可能收不到 | 不少琴只把踏板信号送给内部音源，不往蓝牙广播 | 用「模拟踏板」补延音，但拿不到真实的半踩/换踩 |
 | 三连音 | 当前没有可靠的自动识别策略 | 三连音需要手动修正或后续专门建模 |
-| 音色是单层采样 | 44 个采样没有力度分层 | 弱奏和强奏是同一段采样变调 |
+| 音色是单层采样 | 30 个采样没有力度分层 | 弱奏用低通压暗高频来近似，强弱的泛音变化不如真琴细 |
 | 拍号是全局固定值 | 不支持曲中变拍号 | 变拍子的曲子排版会错 |
 | 简谱两行不严格纵向对齐 | 高低音各自按拍位顺序排布 | 能看，但不是总谱式的严格对齐 |
 | 波形计算未移入 Worker | 峰值金字塔已经把缩放降到约 1/128 | 极长音频仍可能占用主线程 |
@@ -549,7 +551,7 @@ piano-studio/
 │   ├── vexflow.js          VexFlow 4.2.3，五线谱排版
 │   ├── vexflow-bravura.js  Bravura 音乐字体数据
 │   └── lame.min.js         lamejs 1.2.1，浏览器内 MP3 编码
-├── samples/                44 个钢琴采样（A0–C8，隔半音）
+├── samples/                30 个钢琴采样（A0–C8，每 3 个半音一个）
 ├── desktop/                Electron 桌面版外壳（main.js + 打包配置）
 ├── docs/                   README 用的截图
 ├── THIRD-PARTY-NOTICES.md  第三方许可与署名
@@ -593,7 +595,7 @@ http://localhost:8765/index.html?selftest=1
 - 源代码：**MIT**，见 [LICENSE](LICENSE)
 - `lib/` 与 `samples/` 中的第三方资源另有许可，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
 
-其中钢琴采样来自 FluidR3_GM（作者 Frank Wen），采用 **CC BY 3.0**，
+其中钢琴采样来自 **Salamander Grand Piano**（Alexander Holm 录制），采用 **CC BY 3.0**，
 如需再分发请保留署名。
 
 ---
@@ -602,7 +604,8 @@ http://localhost:8765/index.html?selftest=1
 
 - [VexFlow](https://github.com/0xfe/vexflow) —— 没有它就没有像样的五线谱
 - [lamejs](https://github.com/zhuker/lamejs) —— 纯 JS 的 MP3 编码器
-- [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts) —— 预渲染的 FluidR3_GM 采样
+- [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts) —— 早期版本使用的 FluidR3_GM 采样
+- [Salamander Grand Piano](https://archive.org/details/SalamanderGrandPianoV3) —— 现在的钢琴采样（Alexander Holm 录制）
 - [Web Bluetooth](https://developer.mozilla.org/docs/Web/API/Web_Bluetooth_API) 与
   [BLE-MIDI 规范](https://midi.org/midi-over-bluetooth-low-energy) —— 让浏览器能直接和琴说话
 
