@@ -1866,6 +1866,22 @@ function decomposeNoteDuration(len) {
   return decompose(rounded, NOTE_DURS);
 }
 
+function buildPedalIntervals(ccs, endMs) {
+  var events = (ccs || []).filter(function (c) { return c.cc === 64; })
+    .slice().sort(function (a, b) { return a.t - b.t; });
+  var intervals = [], downAt = null;
+  events.forEach(function (event) {
+    if (event.value >= 64 && downAt === null) {
+      downAt = event.t;
+    } else if (event.value < 64 && downAt !== null) {
+      intervals.push({ start: downAt, end: event.t });
+      downAt = null;
+    }
+  });
+  if (downAt !== null) intervals.push({ start: downAt, end: endMs });
+  return intervals.filter(function (item) { return item.end > item.start + 1; });
+}
+
 function syncBpmLabel() {
   var el = $('mBpm');
   if (el) el.textContent = state.bpm;
@@ -2152,6 +2168,9 @@ function buildScore() {
     while (voice.length < n) voice.push(padMeasure());
   });
 
+  var scoreEndMs = src.reduce(function (max, n) {
+    return Math.max(max, noteFingerEnd(n));
+  }, 0);
   score = {
     treble: treble,
     bass: bass,
@@ -2160,7 +2179,8 @@ function buildScore() {
     n: n,
     key: ki,
     bpm: bpm,
-    sig: sigNum + '/' + sigDen
+    sig: sigNum + '/' + sigDen,
+    pedalIntervals: buildPedalIntervals(state.ccs, scoreEndMs)
   };
   return score;
 }
@@ -2168,6 +2188,33 @@ function buildScore() {
 /* ============================================================
    五线谱（VexFlow）
    ============================================================ */
+function drawPedalMarks(ctx, x, y, width, measureStart, barLen, intervals, spb) {
+  if (!intervals || !intervals.length) return;
+  var measureEnd = measureStart + barLen;
+  var markY = y + 64;
+  intervals.forEach(function (interval) {
+    var start = Math.max(measureStart, interval.start / 1000 / spb);
+    var end = Math.min(measureEnd, interval.end / 1000 / spb);
+    if (end <= start + 0.001) return;
+    var x0 = x + (start - measureStart) / barLen * width;
+    var x1 = x + (end - measureStart) / barLen * width;
+    var startsHere = interval.start / 1000 / spb >= measureStart - 0.001;
+    var endsHere = interval.end / 1000 / spb <= measureEnd + 0.001;
+    ctx.save();
+    if (ctx.setFont) ctx.setFont('Arial', 10, 'normal');
+    if (ctx.setFillStyle) ctx.setFillStyle('#5c6b63');
+    if (startsHere && ctx.fillText) ctx.fillText('Ped.', x0, markY);
+    if (ctx.setStrokeStyle) ctx.setStrokeStyle('#7b8a82');
+    if (ctx.setLineWidth) ctx.setLineWidth(1);
+    ctx.beginPath();
+    ctx.moveTo(x0, markY + 5);
+    ctx.lineTo(x1, markY + 5);
+    ctx.stroke();
+    if (endsHere && ctx.fillText) ctx.fillText('✱', Math.max(x0, x1 - 4), markY + 17);
+    ctx.restore();
+  });
+}
+
 function renderStaff() {
   var host = $('staffHost');
   host.innerHTML = '';
@@ -2235,6 +2282,9 @@ function renderStaff() {
         var r = drawMeasure(ctx, tStave, bStave, tVoices, bVoices, score.key);
         allTiesT = allTiesT.concat(r.treble);
         allTiesB = allTiesB.concat(r.bass);
+        var sigParts = (score.sig || '4/4').split('/');
+        var barLen = (parseInt(sigParts[0], 10) || 4) * 4 / (parseInt(sigParts[1], 10) || 4);
+        drawPedalMarks(ctx, x, yBot, mw, idx * barLen, barLen, score.pedalIntervals, 60 / score.bpm);
       } catch (e2) {
         console.warn('measure draw failed', idx, e2);
       }
@@ -2481,6 +2531,42 @@ function renderJianpu() {
       bRow.className = 'jp-row bass' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : '');
       var bHas = emit(voice[m] || [], bRow);
       if (bHas) meas.appendChild(bRow);
+    });
+
+    var sigParts = (score.sig || '4/4').split('/');
+    var barLen = (parseInt(sigParts[0], 10) || 4) * 4 / (parseInt(sigParts[1], 10) || 4);
+    var spb = 60 / score.bpm;
+    var pedalStart = m * barLen;
+    var pedalEnd = pedalStart + barLen;
+    (score.pedalIntervals || []).forEach(function (interval) {
+      var start = Math.max(pedalStart, interval.start / 1000 / spb);
+      var end = Math.min(pedalEnd, interval.end / 1000 / spb);
+      if (end <= start + 0.001) return;
+      var pedalRow = meas.querySelector('.jp-pedal');
+      if (!pedalRow) {
+        pedalRow = document.createElement('div');
+        pedalRow.className = 'jp-pedal';
+        meas.appendChild(pedalRow);
+      }
+      var segment = document.createElement('span');
+      segment.className = 'jp-pedal-segment';
+      segment.style.left = ((start - pedalStart) / barLen * 100) + '%';
+      segment.style.width = ((end - start) / barLen * 100) + '%';
+      pedalRow.appendChild(segment);
+      if (interval.start / 1000 / spb >= pedalStart - 0.001) {
+        var label = document.createElement('b');
+        label.className = 'jp-pedal-label';
+        label.style.left = ((start - pedalStart) / barLen * 100) + '%';
+        label.textContent = 'Ped.';
+        pedalRow.appendChild(label);
+      }
+      if (interval.end / 1000 / spb <= pedalEnd + 0.001) {
+        var release = document.createElement('b');
+        release.className = 'jp-pedal-release';
+        release.style.left = ((end - pedalStart) / barLen * 100) + '%';
+        release.textContent = '✱';
+        pedalRow.appendChild(release);
+      }
     });
     wrap.appendChild(meas);
   }
@@ -5060,6 +5146,12 @@ function runSelfTest() {
     ok('简谱小调主音为 1', jpAm.digit === 1 && jpAm.acc === '', JSON.stringify(jpAm));
     ok('简谱小调升七显示临时升号', jpAmLeading.digit === 7 && jpAmLeading.acc === '♯', JSON.stringify(jpAmLeading));
     ok('简谱 F 大调降 B 显示为 4', jpF.digit === 4 && jpF.acc === '', JSON.stringify(jpF));
+      var pedalDemo = buildPedalIntervals([
+        { cc: 64, value: 127, channel: 0, t: 100 },
+        { cc: 64, value: 0, channel: 0, t: 420 }
+      ], 600);
+      ok('谱面踏板区间按 CC64 生成', pedalDemo.length === 1 && pedalDemo[0].start === 100 && pedalDemo[0].end === 420,
+         JSON.stringify(pedalDemo));
 
     // 用 A 自然小调音集验证 detectKey 返回小调
     var minorScale = [9, 11, 0, 2, 4, 5, 7].map(function (pc) {

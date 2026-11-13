@@ -302,6 +302,10 @@
   .jp-row{display:flex; align-items:center; gap:14px;}
   .jp-row.bass{opacity:.62;}
   .jp-row.bass .jp-num{font-size:14px;}
+  .jp-pedal{position:relative; height:20px; min-width:100%; margin-top:1px; color:var(--muted); font-size:11px;}
+  .jp-pedal-segment{position:absolute; top:14px; height:1px; background:currentColor;}
+  .jp-pedal-label,.jp-pedal-release{position:absolute; top:0; font-weight:600; transform:translateX(-50%);}
+  .jp-pedal-release{top:8px; font-size:10px;}
   .jp-measure:first-child{border-left:3px solid #d2d1c9;}
   .jp-item{display:flex; flex-direction:column; align-items:center; min-width:16px; position:relative;}
   .jp-num{font-size:16px; line-height:1.1; font-variant-numeric:tabular-nums;}
