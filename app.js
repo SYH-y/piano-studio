@@ -2010,7 +2010,7 @@ function buildScore() {
   var sigDen = parseInt(sigParts[1], 10) || 4;
   var barLen = sigNum * 4 / sigDen;
 
-  function chordsFor(staffTest) {
+  function voiceListsFor(staffTest) {
     var map = {};
     src.forEach(function (n) {
       if (!staffTest(n.pitch)) return;
@@ -2018,18 +2018,47 @@ function buildScore() {
       var e = Math.round((noteFingerEnd(n) / 1000 / spb) / gb) * gb;
       if (e <= s) e = s + gb;
       var k = s.toFixed(3);
-      if (!map[k]) map[k] = { s: s, e: e, pitches: [] };
-      map[k].pitches.push(n.pitch);
-      if (e > map[k].e) map[k].e = e;
+      if (!map[k]) map[k] = [];
+      map[k].push({ s: s, e: e, pitch: n.pitch });
     });
-    var list = Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) { return a.s - b.s; });
-    for (var i = 0; i < list.length; i++) {
-      var next = i + 1 < list.length ? list[i + 1].s : 1e9;
-      // 保留真实时长（可跨小节），只按下一个和弦起点截断以避免重叠
-      var dur = Math.min(list[i].e - list[i].s, next - list[i].s);
-      list[i].dur = dur > 0 ? dur : gb;
-    }
-    return list;
+
+    var events = [];
+    Object.keys(map).forEach(function (key) {
+      var byEnd = [];
+      map[key].forEach(function (note) {
+        var group = byEnd.find(function (item) { return Math.abs(item.e - note.e) < 0.001; });
+        if (!group) {
+          group = { s: note.s, e: note.e, pitches: [] };
+          byEnd.push(group);
+        }
+        group.pitches.push(note.pitch);
+      });
+      byEnd.forEach(function (group) {
+        group.pitches.sort(function (a, b) { return a - b; });
+        group.dur = Math.max(gb, group.e - group.s);
+        events.push(group);
+      });
+    });
+    events.sort(function (a, b) { return a.s - b.s || a.e - b.e; });
+
+    var lanes = [];
+    events.forEach(function (event) {
+      var lane = null;
+      for (var i = 0; i < lanes.length; i++) {
+        if (lanes[i].end <= event.s + 0.001) {
+          lane = lanes[i];
+          break;
+        }
+      }
+      if (!lane) {
+        lane = { end: 0, events: [] };
+        lanes.push(lane);
+      }
+      lane.events.push(event);
+      lane.end = event.e;
+    });
+
+    return lanes.length ? lanes.map(function (lane) { return measures(lane.events); }) : [[]];
   }
 
   function measures(list) {
@@ -2101,10 +2130,14 @@ function buildScore() {
     return out;
   }
 
-  var treble = measures(chordsFor(function (p) { return p >= 60; }));
-  var bass = measures(chordsFor(function (p) { return p < 60; }));
+  var trebleVoices = voiceListsFor(function (p) { return p >= 60; });
+  var bassVoices = voiceListsFor(function (p) { return p < 60; });
+  var treble = trebleVoices[0] || [];
+  var bass = bassVoices[0] || [];
 
   var n = Math.max(treble.length, bass.length);
+  trebleVoices.forEach(function (voice) { n = Math.max(n, voice.length); });
+  bassVoices.forEach(function (voice) { n = Math.max(n, voice.length); });
   function padMeasure() {
     return decompose(barLen, REST_DURS).map(function (r) {
       return { rest: true, b: r.b, d: r.d };
@@ -2112,8 +2145,23 @@ function buildScore() {
   }
   while (treble.length < n) treble.push(padMeasure());
   while (bass.length < n) bass.push(padMeasure());
+  trebleVoices.forEach(function (voice) {
+    while (voice.length < n) voice.push(padMeasure());
+  });
+  bassVoices.forEach(function (voice) {
+    while (voice.length < n) voice.push(padMeasure());
+  });
 
-  score = { treble: treble, bass: bass, n: n, key: ki, bpm: bpm, sig: sigNum + '/' + sigDen };
+  score = {
+    treble: treble,
+    bass: bass,
+    trebleVoices: trebleVoices,
+    bassVoices: bassVoices,
+    n: n,
+    key: ki,
+    bpm: bpm,
+    sig: sigNum + '/' + sigDen
+  };
   return score;
 }
 
@@ -2182,7 +2230,9 @@ function renderStaff() {
       bStave.setContext(ctx).draw();
 
       try {
-        var r = drawMeasure(ctx, tStave, bStave, score.treble[idx], score.bass[idx], score.key);
+        var tVoices = (score.trebleVoices || [score.treble]).map(function (voice) { return voice[idx] || []; });
+        var bVoices = (score.bassVoices || [score.bass]).map(function (voice) { return voice[idx] || []; });
+        var r = drawMeasure(ctx, tStave, bStave, tVoices, bVoices, score.key);
         allTiesT = allTiesT.concat(r.treble);
         allTiesB = allTiesB.concat(r.bass);
       } catch (e2) {
@@ -2195,9 +2245,12 @@ function renderStaff() {
 }
 
 function drawMeasure(ctx, tStave, bStave, tItems, bItems, ki) {
-  var tt = drawVoice(ctx, tStave, tItems, 'treble', ki);
-  var bt = drawVoice(ctx, bStave, bItems, 'bass', ki);
-  return { treble: tt || [], bass: bt || [] };
+  var trebleItems = Array.isArray(tItems[0]) ? tItems : [tItems];
+  var bassItems = Array.isArray(bItems[0]) ? bItems : [bItems];
+  var tt = [], bt = [];
+  trebleItems.forEach(function (items) { tt = tt.concat(drawVoice(ctx, tStave, items, 'treble', ki) || []); });
+  bassItems.forEach(function (items) { bt = bt.concat(drawVoice(ctx, bStave, items, 'bass', ki) || []); });
+  return { treble: tt, bass: bt };
 }
 
 function drawVoice(ctx, stave, items, clef, ki) {
@@ -2338,6 +2391,8 @@ function renderJianpu() {
   }
 
   var ki = score.key;
+  var trebleVoices = score.trebleVoices || [score.treble];
+  var bassVoices = score.bassVoices || [score.bass];
   var wrap = document.createElement('div');
   wrap.className = 'jp-wrap';
 
@@ -2414,16 +2469,19 @@ function renderJianpu() {
     var meas = document.createElement('div');
     meas.className = 'jp-measure';
 
-    var tRow = document.createElement('div');
-    tRow.className = 'jp-row';
-    emit(score.treble[m] || [], tRow);
+    trebleVoices.forEach(function (voice, voiceIndex) {
+      var tRow = document.createElement('div');
+      tRow.className = 'jp-row' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : '');
+      emit(voice[m] || [], tRow);
+      meas.appendChild(tRow);
+    });
 
-    var bRow = document.createElement('div');
-    bRow.className = 'jp-row bass';
-    var bHas = emit(score.bass[m] || [], bRow);
-
-    meas.appendChild(tRow);
-    if (bHas) meas.appendChild(bRow);
+    bassVoices.forEach(function (voice, voiceIndex) {
+      var bRow = document.createElement('div');
+      bRow.className = 'jp-row bass' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : '');
+      var bHas = emit(voice[m] || [], bRow);
+      if (bHas) meas.appendChild(bRow);
+    });
     wrap.appendChild(meas);
   }
 
@@ -5037,6 +5095,18 @@ function runSelfTest() {
     ok('长时值拆分后不丢拍', durItems.length === 2 && Math.abs(durSum - 3.5) < 0.01 && durItems.every(function (it) { return it.tie; }),
        'items=' + durItems.length + ' sum=' + durSum);
     state.notes = keepNotesDur; state.timeSig = keepSigDur; state.bpm = keepBpmDur; state.gridDiv = keepGridDur;
+
+    var keepNotesVoice = state.notes, keepSigVoice = state.timeSig, keepBpmVoice = state.bpm, keepGridVoice = state.gridDiv;
+    state.notes = [
+      { pitch: 72, vel: 90, tOn: 0, tOff: 1500 },
+      { pitch: 76, vel: 90, tOn: 0, tOff: 500 },
+      { pitch: 74, vel: 90, tOn: 500, tOff: 1000 }
+    ];
+    state.bpm = 60; state.timeSig = '4/4'; state.gridDiv = 2;
+    var scVoices = buildScore();
+    ok('不同长度重叠音符分到不同声部', scVoices.trebleVoices && scVoices.trebleVoices.length >= 2,
+       'voices=' + (scVoices.trebleVoices || []).length);
+    state.notes = keepNotesVoice; state.timeSig = keepSigVoice; state.bpm = keepBpmVoice; state.gridDiv = keepGridVoice;
 
     // 版本快照摘要
     ok('快照摘要-音符', snapMeta({ notes: [{}, {}, {}], clips: [] }) === '3 个音符',
