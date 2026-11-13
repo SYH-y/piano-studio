@@ -99,6 +99,7 @@ var actx = null, live = null;
 var samples = new Map();          // 音高 -> 处理过的采样
 var samplesReady = false;
 var samplesLoading = false;
+var sampleLoadPromise = null;
 var activeNodes = [];
 
 /* 采样集：Salamander Grand Piano（真实三角钢琴录音，CC BY 3.0）。
@@ -362,6 +363,26 @@ function ensureSampleCtx() {
 }
 
 async function loadSamples() {
+  if (samplesReady) return true;
+  if (sampleLoadPromise) return sampleLoadPromise;
+  sampleLoadPromise = loadSamplesNow().finally(function () {
+    sampleLoadPromise = null;
+  });
+  return sampleLoadPromise;
+}
+
+async function ensureSamplesReady() {
+  if (samplesReady) return true;
+  var ready = await loadSamples();
+  if (!ready || !samplesReady) {
+    var hint = $('toneHint');
+    if (hint) hint.textContent = '真实钢琴采样没有加载完成，当前不能生成钢琴音色。请检查 samples 目录后点“重新加载”。';
+    return false;
+  }
+  return true;
+}
+
+async function loadSamplesNow() {
   if (samplesLoading) return;
   samplesLoading = true;
 
@@ -411,6 +432,7 @@ async function loadSamples() {
       : '采样加载失败（' + failed + ' 个文件读取失败），当前为合成音色。确认 samples 目录完整后点上面的按钮重试。';
   }
   samplesLoading = false;
+  return samplesReady;
 }
 
 /* ============================================================
@@ -1030,9 +1052,10 @@ function tick() {
 
 var playTimer = null;
 
-function play() {
+async function play() {
   var done = state.notes.filter(function (n) { return n.tOff !== null; });
   if (!done.length) return;
+  if (!(await ensureSamplesReady())) return;
   initLive();
   if (actx.state === 'suspended') actx.resume();
 
@@ -1187,9 +1210,14 @@ function practiceRange() {
   return { start: a * 1000, end: b * 1000 };
 }
 
-function practiceStartCycle() {
+async function practiceStartCycle() {
   if (!practice.active) return;
   if (practice.timer) clearTimeout(practice.timer);
+  if (!(await ensureSamplesReady())) {
+    stopPractice();
+    return;
+  }
+  if (!practice.active) return;
   stopAllSound();
   initLive();
   if (actx.state === 'suspended') actx.resume();
@@ -3140,6 +3168,7 @@ function encodeWav(buffer) {
 async function renderOffline() {
   var notes = state.notes.filter(function (n) { return n.tOff !== null; });
   if (!notes.length) return null;
+  if (!(await ensureSamplesReady())) throw new Error('真实钢琴采样没有加载完成');
 
   var rel = $('sustain').checked ? 1.4 : 0.12;
   var endMs = Math.max.apply(null, notes.map(function (n) { return n.tOff; }));
