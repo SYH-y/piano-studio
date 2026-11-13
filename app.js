@@ -571,52 +571,151 @@ function nowMs() {
 }
 
 var monitorNodes = {};
+var pedalState = {};
 
-function onNoteOn(pitch, vel, t) {
+function noteKey(channel, pitch) {
+  return String(channel || 0) + ':' + pitch;
+}
+
+function getPedalState(channel) {
+  var key = String(channel || 0);
+  if (!pedalState[key]) pedalState[key] = { value: 0, down: false, held: [] };
+  return pedalState[key];
+}
+
+function isPedalDown(channel) {
+  return getPedalState(channel).down;
+}
+
+function noteSoundEnd(note) {
+  return note && note.soundOff !== null && note.soundOff !== undefined
+    ? Math.max(note.tOff || 0, note.soundOff)
+    : note.tOff;
+}
+
+function releaseMonitorGain(entry, seconds) {
+  if (!entry || !entry.gain || !actx) return;
+  try {
+    var now = actx.currentTime;
+    entry.gain.cancelScheduledValues(now);
+    entry.gain.setValueAtTime(Math.max(entry.gain.value, 0.0001), now);
+    entry.gain.exponentialRampToValueAtTime(0.0001, now + seconds);
+  } catch (e) {}
+}
+
+function flushMonitorPedal(channel) {
+  Object.keys(monitorNodes).forEach(function (key) {
+    var entry = monitorNodes[key];
+    if (!entry || entry.channel !== channel || !entry.released) return;
+    releaseMonitorGain(entry, $('sustain').checked ? 0.6 : 0.18);
+    delete monitorNodes[key];
+  });
+}
+
+function finishPedalNotes(channel, t) {
+  var pedal = getPedalState(channel);
+  pedal.held.forEach(function (note) { note.soundOff = t; });
+  pedal.held = [];
+  flushMonitorPedal(channel);
+}
+
+function handleSustain(channel, value, t) {
+  var pedal = getPedalState(channel);
+  var wasDown = pedal.down;
+  pedal.value = value;
+  pedal.down = value >= 64;
+  if (wasDown && !pedal.down) finishPedalNotes(channel, t);
+}
+
+function applyPedalTimeline(notes, ccs) {
+  var byChannel = {};
+  (ccs || []).filter(function (c) { return c.cc === 64; }).forEach(function (c) {
+    var channel = c.channel || 0;
+    if (!byChannel[channel]) byChannel[channel] = [];
+    byChannel[channel].push(c);
+  });
+  Object.keys(byChannel).forEach(function (channel) {
+    byChannel[channel].sort(function (a, b) { return a.t - b.t; });
+  });
+
+  (notes || []).forEach(function (note) {
+    var events = byChannel[note.channel || 0] || [];
+    var down = false;
+    var releaseAt = null;
+    events.forEach(function (event) {
+      if (event.t > note.tOff) return;
+      down = event.value >= 64;
+    });
+    if (down) {
+      for (var i = 0; i < events.length; i++) {
+        if (events[i].t > note.tOff && events[i].value < 64) {
+          releaseAt = events[i].t;
+          break;
+        }
+      }
+    }
+    note.tFingerOff = note.tOff;
+    note.soundOff = releaseAt === null ? note.tOff : releaseAt;
+  });
+}
+
+function onNoteOn(pitch, vel, t, channel) {
+  channel = channel || 0;
   lightKey(pitch, true);
   practiceHandleNote(pitch);
   if (state.recording) {
-    state.pending[pitch] = { pitch: pitch, vel: vel, tOn: t, tOff: null };
+    var pendingKey = noteKey(channel, pitch);
+    if (!state.pending[pendingKey]) state.pending[pendingKey] = [];
+    state.pending[pendingKey].push({ pitch: pitch, vel: vel, channel: channel, tOn: t, tOff: null, soundOff: null });
   }
   if ($('monitor').checked) {
     initLive();
     if (actx.state === 'suspended') actx.resume();
     // 同一音高连按时，先把上一个还响着的收掉，避免叠成一片
-    var prev = monitorNodes[pitch];
+    var monitorKey = noteKey(channel, pitch);
+    var prev = monitorNodes[monitorKey];
     if (prev) {
-      try {
-        var tn = actx.currentTime;
-        prev.gain.cancelScheduledValues(tn);
-        prev.gain.setValueAtTime(Math.max(prev.gain.value, 0.0001), tn);
-        prev.gain.exponentialRampToValueAtTime(0.0001, tn + 0.06);
-      } catch (e) {}
+      releaseMonitorGain(prev, 0.06);
     }
     // 时值给足，真正的收声交给抬键
-    monitorNodes[pitch] = playTone(actx, live, actx.currentTime + 0.01, pitch, vel, 4, 0.5);
+    monitorNodes[monitorKey] = {
+      channel: channel,
+      pitch: pitch,
+      gain: playTone(actx, live, actx.currentTime + 0.01, pitch, vel, 4, 0.5),
+      released: false
+    };
   }
   drawRoll();
 }
 
-function onNoteOff(pitch, t) {
+function onNoteOff(pitch, t, channel) {
+  channel = channel || 0;
   lightKey(pitch, false);
 
-  var mn = monitorNodes[pitch];
+  var monitorKey = noteKey(channel, pitch);
+  var mn = monitorNodes[monitorKey];
   if (mn && actx) {
-    delete monitorNodes[pitch];
-    try {
-      var now = actx.currentTime;
-      mn.gain.cancelScheduledValues(now);
-      mn.gain.setValueAtTime(Math.max(mn.gain.value, 0.0001), now);
-      mn.gain.exponentialRampToValueAtTime(0.0001, now + ($('sustain').checked ? 0.6 : 0.18));
-    } catch (e) {}
+    mn.released = true;
+    if (!isPedalDown(channel)) {
+      releaseMonitorGain(mn, $('sustain').checked ? 0.6 : 0.18);
+      delete monitorNodes[monitorKey];
+    }
   }
 
   if (state.recording) {
-    var p = state.pending[pitch];
+    var pendingKey = noteKey(channel, pitch);
+    var stack = state.pending[pendingKey];
+    var p = stack && stack.length ? stack.shift() : null;
     if (p) {
       p.tOff = t;
+      p.tFingerOff = t;
+      if (isPedalDown(channel)) {
+        getPedalState(channel).held.push(p);
+      } else {
+        p.soundOff = t;
+      }
       state.notes.push(p);
-      delete state.pending[pitch];
+      if (!stack.length) delete state.pending[pendingKey];
       $('mNotes').textContent = state.notes.length;
     }
   }
@@ -625,12 +724,14 @@ function onNoteOff(pitch, t) {
 
 function handleMessage(msg, t) {
   var kind = msg[0] & 0xF0;
+  var channel = msg[0] & 0x0F;
   if (kind === 0x90 && msg.length >= 3 && msg[2] > 0) {
-    onNoteOn(msg[1], msg[2], t);
+    onNoteOn(msg[1], msg[2], t, channel);
   } else if (kind === 0x80 || (kind === 0x90 && msg.length >= 3 && msg[2] === 0)) {
-    onNoteOff(msg[1], t);
+    onNoteOff(msg[1], t, channel);
   } else if (kind === 0xB0) {
-    state.ccs.push({ cc: msg[1], value: msg[2], t: t });
+    state.ccs.push({ cc: msg[1], value: msg[2], channel: channel, t: t });
+    if (msg[1] === 64) handleSustain(channel, msg[2], t);
     $('mCc').textContent = state.ccs.length;
     var label = msg[1] === 64 ? '延音踏板' : ('CC' + msg[1]);
     $('ccbox').textContent = label + '：B0 ' + msg[1].toString(16).toUpperCase() + ' ' + msg[2].toString(16).toUpperCase() + '（值 ' + msg[2] + '）';
@@ -651,6 +752,7 @@ function disconnectBle() {
   }
   bleChar = null;
   monitorNodes = {};
+  pedalState = {};
 }
 
 async function connect() {
@@ -959,6 +1061,7 @@ function startRecNow() {
   state.notes = [];
   state.pending = {};
   state.ccs = [];
+  pedalState = {};
   practiceUpdate();
   state.lastDur = 0;
   noteEdit.selected = -1;
@@ -988,11 +1091,17 @@ function stopRec() {
   stopMetro();
   var t = performance.now() - state.t0;
   Object.keys(state.pending).forEach(function (k) {
-    var p = state.pending[k];
-    p.tOff = t;
-    state.notes.push(p);
+    var stack = state.pending[k] || [];
+    stack.forEach(function (p) {
+      p.tOff = t;
+      p.tFingerOff = t;
+      p.soundOff = t;
+      state.notes.push(p);
+    });
   });
+  Object.keys(pedalState).forEach(function (channel) { finishPedalNotes(parseInt(channel, 10), t); });
   state.pending = {};
+  state.notes.sort(function (a, b) { return a.tOn - b.tOn || a.pitch - b.pitch; });
   state.lastDur = t / 1000;
   practiceSyncBounds();
 
@@ -1064,13 +1173,13 @@ async function play() {
   var rel = $('sustain').checked ? 1.4 : 0.12;
   var start = actx.currentTime + 0.12;
   done.forEach(function (n) {
-    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000);
+    var dur = Math.max(0.05, (noteSoundEnd(n) - n.tOn) / 1000);
     playTone(actx, live, start + n.tOn / 1000, n.pitch, n.vel, dur, rel);
   });
 
   state.playing = true;
   $('btnStop').disabled = false;
-  var total = Math.max.apply(null, done.map(function (n) { return n.tOff; })) / 1000;
+  var total = Math.max.apply(null, done.map(noteSoundEnd)) / 1000;
   state.playStart = start;
   state.playTotal = total;
   setPill('播放中', 'on');
@@ -1236,7 +1345,7 @@ async function practiceStartCycle() {
   var rel = $('sustain').checked ? 1.0 : 0.12;
   notes.forEach(function (n) {
     var at = base + (n.tOn - practice.startMs) / 1000 * scale;
-    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000 * scale);
+    var dur = Math.max(0.05, (noteSoundEnd(n) - n.tOn) / 1000 * scale);
     playTone(actx, live, at, n.pitch, n.vel, dur, rel);
   });
 
@@ -1358,7 +1467,11 @@ function fitRoll() {
 function rollGeometry() {
   var w = roll.clientWidth, h = roll.clientHeight;
   var top = 22, drawH = h - top - 10;
-  var allNotes = state.notes.concat(Object.keys(state.pending).map(function (k) { return state.pending[k]; }));
+  var pendingNotes = [];
+  Object.keys(state.pending).forEach(function (k) {
+    pendingNotes = pendingNotes.concat(state.pending[k] || []);
+  });
+  var allNotes = state.notes.concat(pendingNotes);
   var lo = 108, hi = 21;
   allNotes.forEach(function (n) { if (n.pitch < lo) lo = n.pitch; if (n.pitch > hi) hi = n.pitch; });
   lo = Math.max(KEY_LOW, lo - 3);
@@ -1473,11 +1586,25 @@ function noteNameOf(p) {
 }
 
 function noteSnapshot() {
-  return state.notes.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
+  return state.notes.map(function (n) {
+    return {
+      pitch: n.pitch, vel: n.vel, channel: n.channel || 0,
+      tOn: n.tOn, tOff: n.tOff,
+      tFingerOff: n.tFingerOff === undefined ? n.tOff : n.tFingerOff,
+      soundOff: n.soundOff === undefined ? n.tOff : n.soundOff
+    };
+  });
 }
 
 function noteRestore(snap) {
-  state.notes = snap.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
+  state.notes = snap.map(function (n) {
+    return {
+      pitch: n.pitch, vel: n.vel, channel: n.channel || 0,
+      tOn: n.tOn, tOff: n.tOff,
+      tFingerOff: n.tFingerOff === undefined ? n.tOff : n.tFingerOff,
+      soundOff: n.soundOff === undefined ? n.tOff : n.soundOff
+    };
+  });
 }
 
 function selectedNoteRef() {
@@ -1860,8 +1987,9 @@ function buildScore() {
   if (state.recording) {
     var nowT = performance.now() - state.t0;
     Object.keys(state.pending).forEach(function (k) {
-      var p = state.pending[k];
-      src.push({ pitch: p.pitch, vel: p.vel, tOn: p.tOn, tOff: Math.max(nowT, p.tOn + 90) });
+      (state.pending[k] || []).forEach(function (p) {
+        src.push({ pitch: p.pitch, vel: p.vel, tOn: p.tOn, tOff: Math.max(nowT, p.tOn + 90) });
+      });
     });
   }
   if (!src.length) { score = null; return null; }
@@ -2531,7 +2659,8 @@ function parseMidiData(input) {
     maxTick = Math.max(maxTick, tr.endTick);
     tr.notes = tr.notes.map(function (n) {
       maxTick = Math.max(maxTick, n.tOffTick);
-      return { pitch: n.pitch, vel: n.vel, channel: n.channel, tOn: tickMs(n.tOnTick), tOff: tickMs(n.tOffTick) };
+      var tOn = tickMs(n.tOnTick), tOff = tickMs(n.tOffTick);
+      return { pitch: n.pitch, vel: n.vel, channel: n.channel, tOn: tOn, tOff: tOff, tFingerOff: tOff, soundOff: tOff };
     });
     tr.ccs = tr.ccs.map(function (c) {
       maxTick = Math.max(maxTick, c.tick);
@@ -2679,9 +2808,18 @@ function loadSelectedMidiTracks() {
   notes.sort(function (a, b) { return a.tOn - b.tOn || a.pitch - b.pitch; });
   ccs.sort(function (a, b) { return a.t - b.t; });
   saveSnapshot(true);
-  state.notes = notes.map(function (n) { return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff }; });
-  state.ccs = ccs.map(function (c) { return { cc: c.cc, value: c.value, t: c.t }; });
+  state.notes = notes.map(function (n) {
+    return {
+      pitch: n.pitch, vel: n.vel, channel: n.channel || 0,
+      tOn: n.tOn, tOff: n.tOff,
+      tFingerOff: n.tFingerOff === undefined ? n.tOff : n.tFingerOff,
+      soundOff: n.soundOff === undefined ? n.tOff : n.soundOff
+    };
+  });
+  state.ccs = ccs.map(function (c) { return { cc: c.cc, value: c.value, channel: c.channel || 0, t: c.t }; });
+  applyPedalTimeline(state.notes, state.ccs);
   state.pending = {};
+  pedalState = {};
   state.lastDur = Math.max.apply(null, state.notes.map(function (n) { return n.tOff; })) / 1000;
   state.bpm = midiImport.bpm || 120;
   state.bpmAuto = false;
@@ -3114,11 +3252,12 @@ function exportMIDI() {
 
   var evs = [];
   notes.forEach(function (n) {
-    evs.push([Math.round(n.tOn / 1000 * TPS), [0x90, n.pitch, Math.max(1, n.vel)]]);
-    evs.push([Math.round(n.tOff / 1000 * TPS), [0x80, n.pitch, 0]]);
+    var channel = n.channel || 0;
+    evs.push([Math.round(n.tOn / 1000 * TPS), [0x90 | channel, n.pitch, Math.max(1, n.vel)]]);
+    evs.push([Math.round(n.tOff / 1000 * TPS), [0x80 | channel, n.pitch, 0]]);
   });
   state.ccs.forEach(function (c) {
-    evs.push([Math.round(c.t / 1000 * TPS), [0xB0, c.cc, c.value]]);
+    evs.push([Math.round(c.t / 1000 * TPS), [0xB0 | (c.channel || 0), c.cc, c.value]]);
   });
   evs.sort(function (a, b) { return a[0] - b[0]; });
 
@@ -3171,14 +3310,14 @@ async function renderOffline() {
   if (!(await ensureSamplesReady())) throw new Error('真实钢琴采样没有加载完成');
 
   var rel = $('sustain').checked ? 1.4 : 0.12;
-  var endMs = Math.max.apply(null, notes.map(function (n) { return n.tOff; }));
+  var endMs = Math.max.apply(null, notes.map(noteSoundEnd));
   var total = endMs / 1000 + rel + 1.5;
 
   var offline = new OfflineAudioContext(2, Math.ceil(total * 44100), 44100);
   var outs = buildGraph(offline, state.wet, state.vol);
 
   notes.forEach(function (n) {
-    var dur = Math.max(0.05, (n.tOff - n.tOn) / 1000);
+    var dur = Math.max(0.05, (noteSoundEnd(n) - n.tOn) / 1000);
     playTone(offline, outs, n.tOn / 1000 + 0.02, n.pitch, n.vel, dur, rel);
   });
 
@@ -4714,6 +4853,7 @@ function runSelfTest() {
     (function () {
       var keepRec = state.recording, keepT0 = state.t0, keepNotes = state.notes, keepPend = state.pending;
       var keepCcs = state.ccs;
+      var keepPedal = pedalState;
       state.recording = true;
       state.t0 = performance.now() - 1000;
       state.notes = [];
@@ -4722,7 +4862,8 @@ function runSelfTest() {
 
       ok('USB 消息交给 handleMessage', applyMidiEvent(new Uint8Array([0x90, 60, 100]), 0) === true,
          'pending=' + Object.keys(state.pending).length);
-      ok('USB Note On 进入 pending', !!state.pending[60], JSON.stringify(state.pending[60] || null));
+      ok('USB Note On 进入 pending', !!state.pending['0:60'] && state.pending['0:60'].length === 1,
+         JSON.stringify(state.pending['0:60'] || null));
 
       applyMidiEvent(new Uint8Array([0x80, 60, 0]), 120);
       ok('USB Note Off 落成音符', state.notes.length === 1 && state.notes[0].pitch === 60,
@@ -4735,8 +4876,34 @@ function runSelfTest() {
       ok('USB 踏板 CC 被记录', state.ccs.length === 1 && state.ccs[0].cc === 64,
          'ccs=' + state.ccs.length);
 
+      state.notes = [];
+      state.pending = {};
+      pedalState = {};
+      state.ccs = [];
+      handleMessage([0x90, 60, 100], 0);
+      handleMessage([0x90, 60, 92], 40);
+      ok('同音重复按键保留两层 pending', !!state.pending['0:60'] && state.pending['0:60'].length === 2,
+         JSON.stringify(state.pending['0:60'] || []));
+      handleMessage([0x80, 60, 0], 80);
+      handleMessage([0x80, 60, 0], 120);
+      ok('同音重复按键生成两个音符', state.notes.length === 2,
+         'notes=' + state.notes.length);
+
+      state.notes = [];
+      state.pending = {};
+      pedalState = {};
+      state.ccs = [];
+      handleMessage([0x90, 64, 100], 0);
+      handleMessage([0xB0, 64, 127], 20);
+      handleMessage([0x80, 64, 0], 100);
+      ok('踏板按下时保留声音结束时间', state.notes.length === 1 && state.notes[0].soundOff === null,
+         JSON.stringify(state.notes[0] || null));
+      handleMessage([0xB0, 64, 0], 320);
+      ok('抬起踏板时完成声音结束时间', state.notes.length === 1 && state.notes[0].soundOff === 320,
+         JSON.stringify(state.notes[0] || null));
+
       state.recording = keepRec; state.t0 = keepT0;
-      state.notes = keepNotes; state.pending = keepPend; state.ccs = keepCcs;
+      state.notes = keepNotes; state.pending = keepPend; state.ccs = keepCcs; pedalState = keepPedal;
     })();
     /* ---- 本轮修复的回归用例 ---- */
 
@@ -5415,7 +5582,15 @@ function serializeMeta() {
     v: 1,
     ts: Date.now(),
     notes: state.notes.map(function (n) {
-      return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff };
+      return {
+        pitch: n.pitch, vel: n.vel, channel: n.channel || 0,
+        tOn: n.tOn, tOff: n.tOff,
+        tFingerOff: n.tFingerOff === undefined ? n.tOff : n.tFingerOff,
+        soundOff: n.soundOff === undefined ? n.tOff : n.soundOff
+      };
+    }),
+    ccs: state.ccs.map(function (c) {
+      return { cc: c.cc, value: c.value, channel: c.channel || 0, t: c.t };
     }),
     bpm: state.bpm,
     gridDiv: state.gridDiv,
@@ -5483,15 +5658,25 @@ async function applyProject(snap) {
   $('keySel').value = state.keyOverride;
 
   state.notes = (snap.notes || []).map(function (n) {
-    return { pitch: n.pitch, vel: n.vel, tOn: n.tOn, tOff: n.tOff };
+    return {
+      pitch: n.pitch, vel: n.vel, channel: n.channel || 0,
+      tOn: n.tOn, tOff: n.tOff,
+      tFingerOff: n.tFingerOff === undefined ? n.tOff : n.tFingerOff,
+      soundOff: n.soundOff === undefined ? n.tOff : n.soundOff
+    };
   });
   state.pending = {};
-  state.ccs = [];
+  pedalState = {};
+  state.ccs = (snap.ccs || []).map(function (c) {
+    return { cc: c.cc, value: c.value, channel: c.channel || 0, t: c.t };
+  });
+  applyPedalTimeline(state.notes, state.ccs);
   state.lastDur = state.notes.length
     ? Math.max.apply(null, state.notes.map(function (n) { return n.tOff; })) / 1000 : 0;
   $('mNotes').textContent = state.notes.length;
   $('mTime').textContent = state.lastDur.toFixed(1) + 's';
-  $('mCc').textContent = '0';
+  $('mCc').textContent = state.ccs.length;
+  renderMidiCcEditor();
   practiceSyncBounds();
 
   edit.undo = [];
