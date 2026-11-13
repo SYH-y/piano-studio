@@ -579,7 +579,7 @@ function noteKey(channel, pitch) {
 
 function getPedalState(channel) {
   var key = String(channel || 0);
-  if (!pedalState[key]) pedalState[key] = { value: 0, down: false, held: [] };
+  if (!pedalState[key]) pedalState[key] = { value: 0, down: false, full: false, held: [] };
   return pedalState[key];
 }
 
@@ -627,10 +627,11 @@ function finishPedalNotes(channel, t) {
 
 function handleSustain(channel, value, t) {
   var pedal = getPedalState(channel);
-  var wasDown = pedal.down;
+  var wasEngaged = pedal.value > 0;
   pedal.value = value;
-  pedal.down = value >= 64;
-  if (wasDown && !pedal.down) finishPedalNotes(channel, t);
+  pedal.down = value > 0;
+  pedal.full = value >= 64;
+  if (wasEngaged && value === 0) finishPedalNotes(channel, t);
 }
 
 function applyPedalTimeline(notes, ccs) {
@@ -650,11 +651,11 @@ function applyPedalTimeline(notes, ccs) {
     var releaseAt = null;
     events.forEach(function (event) {
       if (event.t > note.tOff) return;
-      down = event.value >= 64;
+      down = event.value > 0;
     });
     if (down) {
       for (var i = 0; i < events.length; i++) {
-        if (events[i].t > note.tOff && events[i].value < 64) {
+        if (events[i].t > note.tOff && events[i].value === 0) {
           releaseAt = events[i].t;
           break;
         }
@@ -1869,16 +1870,20 @@ function decomposeNoteDuration(len) {
 function buildPedalIntervals(ccs, endMs) {
   var events = (ccs || []).filter(function (c) { return c.cc === 64; })
     .slice().sort(function (a, b) { return a.t - b.t; });
-  var intervals = [], downAt = null;
+  var intervals = [], downAt = null, maxValue = 0;
   events.forEach(function (event) {
-    if (event.value >= 64 && downAt === null) {
+    if (event.value > 0 && downAt === null) {
       downAt = event.t;
-    } else if (event.value < 64 && downAt !== null) {
-      intervals.push({ start: downAt, end: event.t });
+      maxValue = event.value;
+    } else if (event.value > 0 && downAt !== null) {
+      maxValue = Math.max(maxValue, event.value);
+    } else if (event.value === 0 && downAt !== null) {
+      intervals.push({ start: downAt, end: event.t, maxValue: maxValue, partial: maxValue < 64 });
       downAt = null;
+      maxValue = 0;
     }
   });
-  if (downAt !== null) intervals.push({ start: downAt, end: endMs });
+  if (downAt !== null) intervals.push({ start: downAt, end: endMs, maxValue: maxValue, partial: maxValue < 64 });
   return intervals.filter(function (item) { return item.end > item.start + 1; });
 }
 
@@ -2225,11 +2230,13 @@ function drawPedalMarks(ctx, x, y, width, measureStart, barLen, intervals, spb) 
     if (startsHere && ctx.fillText) ctx.fillText('Ped.', x0, markY);
     if (ctx.setStrokeStyle) ctx.setStrokeStyle('#7b8a82');
     if (ctx.setLineWidth) ctx.setLineWidth(1);
+    if (ctx.setLineDash) ctx.setLineDash(interval.partial ? [3, 2] : []);
     ctx.beginPath();
     ctx.moveTo(x0, markY + 5);
     ctx.lineTo(x1, markY + 5);
     ctx.stroke();
     if (endsHere && ctx.fillText) ctx.fillText('✱', Math.max(x0, x1 - 4), markY + 17);
+    if (ctx.setLineDash) ctx.setLineDash([]);
     ctx.restore();
   });
 }
@@ -2568,7 +2575,7 @@ function renderJianpu() {
         meas.appendChild(pedalRow);
       }
       var segment = document.createElement('span');
-      segment.className = 'jp-pedal-segment';
+      segment.className = 'jp-pedal-segment' + (interval.partial ? ' partial' : '');
       segment.style.left = ((start - pedalStart) / barLen * 100) + '%';
       segment.style.width = ((end - start) / barLen * 100) + '%';
       pedalRow.appendChild(segment);
@@ -5171,6 +5178,12 @@ function runSelfTest() {
       ], 600);
       ok('谱面踏板区间按 CC64 生成', pedalDemo.length === 1 && pedalDemo[0].start === 100 && pedalDemo[0].end === 420,
          JSON.stringify(pedalDemo));
+      var partialPedal = buildPedalIntervals([
+        { cc: 64, value: 40, channel: 0, t: 100 },
+        { cc: 64, value: 0, channel: 0, t: 240 }
+      ], 600);
+      ok('半踏区间保留 partial 标记', partialPedal.length === 1 && partialPedal[0].partial === true,
+         JSON.stringify(partialPedal));
       var onsetDemo = collectOnsetClusters([
         { tOn: 0 }, { tOn: 12 }, { tOn: 24 }, { tOn: 500 }, { tOn: 512 }, { tOn: 1000 }
       ], 45);

@@ -20,7 +20,7 @@
 
 </div>
 
-当前版本：**v1.13.5**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：**v1.13.6**。功能增强记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 <details>
 <summary><b>现在能做什么（点开）</b></summary>
@@ -571,7 +571,7 @@ piano-studio/
 http://localhost:8765/index.html?selftest=1
 ```
 
-会在页面左上角打印 **96 条断言**，覆盖片段分割/合并、删除后贴合、越界钳制、
+会在页面左上角打印 **97 条断言**，覆盖片段分割/合并、删除后贴合、越界钳制、
 撤销重做、粘贴独立性、工程序列化、拖拽文件识别、裁剪静音不丢片段、
 附点时值、调号拼写、BLE-MIDI 报文解析等。
 
@@ -580,7 +580,7 @@ http://localhost:8765/index.html?selftest=1
 | 参数 | 作用 |
 |---|---|
 | `?demo=1` | 载入示例演奏（右手音阶 + 左手和弦） |
-| `?selftest=1` | 运行 96 条内置断言 |
+| `?selftest=1` | 运行 97 条内置断言 |
 | `?help=1` | 直接打开帮助面板 |
 | `?nohelp=1` | 抑制首次访问的帮助弹窗（截图用） |
 | `?idbtest=1` | 检查 IndexedDB 是否可读写 |

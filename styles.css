@@ -304,6 +304,7 @@
   .jp-row.bass .jp-num{font-size:14px;}
   .jp-pedal{position:relative; height:20px; min-width:100%; margin-top:1px; color:var(--muted); font-size:11px;}
   .jp-pedal-segment{position:absolute; top:14px; height:1px; background:currentColor;}
+  .jp-pedal-segment.partial{background:repeating-linear-gradient(90deg,currentColor 0 3px,transparent 3px 5px);}
   .jp-pedal-label,.jp-pedal-release{position:absolute; top:0; font-weight:600; transform:translateX(-50%);}
   .jp-pedal-release{top:8px; font-size:10px;}
   .jp-measure:first-child{border-left:3px solid #d2d1c9;}
