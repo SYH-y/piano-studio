@@ -2299,6 +2299,35 @@ function drawTies(ctx, tieList) {
 /* ============================================================
    简谱
    ============================================================ */
+function jianpuDegreeOf(pitch, ki) {
+  var scaleOff = ki.mode === 'minor'
+    ? [0, 2, 3, 5, 7, 8, 10]
+    : [0, 2, 4, 5, 7, 9, 11];
+  var rel = pitch - ki.tonicMidi;
+  var oct = Math.floor(rel / 12);
+  var off = rel - oct * 12;
+  for (var d = 0; d < scaleOff.length; d++) {
+    if (scaleOff[d] === off) return { digit: d + 1, acc: '', oct: oct };
+  }
+
+  var preferFlat = ki.sig < 0;
+  var best = null;
+  for (var i = 0; i < scaleOff.length; i++) {
+    var diff = off - scaleOff[i];
+    if (diff > 6) diff -= 12;
+    if (diff < -6) diff += 12;
+    var distance = Math.abs(diff);
+    if (!best || distance < best.distance || (distance === best.distance && ((preferFlat && diff < 0) || (!preferFlat && diff > 0)))) {
+      best = { digit: i + 1, diff: diff, distance: distance };
+    }
+  }
+  return {
+    digit: best.digit,
+    acc: best.diff < 0 ? '♭' : '♯',
+    oct: oct
+  };
+}
+
 function renderJianpu() {
   var host = $('jianpuHost');
   host.innerHTML = '';
@@ -2309,21 +2338,11 @@ function renderJianpu() {
   }
 
   var ki = score.key;
-  var scaleOff = [0, 2, 4, 5, 7, 9, 11];
   var wrap = document.createElement('div');
   wrap.className = 'jp-wrap';
 
   function degreeOf(pitch) {
-    var rel = pitch - ki.tonicMidi;
-    var oct = Math.floor(rel / 12);
-    var off = rel - oct * 12;
-    for (var d = 0; d < 7; d++) {
-      if (scaleOff[d] === off) return { digit: d + 1, acc: '', oct: oct };
-    }
-    for (var d2 = 6; d2 >= 0; d2--) {
-      if (scaleOff[d2] < off) return { digit: d2 + 1, acc: '#', oct: oct };
-    }
-    return { digit: 1, acc: '', oct: oct };
+    return jianpuDegreeOf(pitch, ki);
   }
 
   // 把一条声部渲染进一行，返回这一行是否有实际音符
@@ -4977,6 +4996,12 @@ function runSelfTest() {
     var kiCm = keyInfoFor(0, 'major');
     ok('C 大调显示名', keyDisplayName(kiCm) === 'C 大调', keyDisplayName(kiCm));
     ok('A 小调显示名', keyDisplayName(kiAm) === 'a 小调', keyDisplayName(kiAm));
+    var jpAm = jianpuDegreeOf(69, kiAm);
+    var jpAmLeading = jianpuDegreeOf(80, kiAm);
+    var jpF = jianpuDegreeOf(70, keyInfoFor(5, 'major'));
+    ok('简谱小调主音为 1', jpAm.digit === 1 && jpAm.acc === '', JSON.stringify(jpAm));
+    ok('简谱小调升七显示临时升号', jpAmLeading.digit === 7 && jpAmLeading.acc === '♯', JSON.stringify(jpAmLeading));
+    ok('简谱 F 大调降 B 显示为 4', jpF.digit === 4 && jpF.acc === '', JSON.stringify(jpF));
 
     // 用 A 自然小调音集验证 detectKey 返回小调
     var minorScale = [9, 11, 0, 2, 4, 5, 7].map(function (pc) {
