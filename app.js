@@ -572,6 +572,7 @@ function nowMs() {
 
 var monitorNodes = {};
 var pedalState = {};
+var manualPedalDown = false;
 
 function noteKey(channel, pitch) {
   return String(channel || 0) + ':' + pitch;
@@ -584,6 +585,10 @@ function getPedalState(channel) {
 }
 
 function isPedalDown(channel) {
+  return manualPedalDown || getPedalState(channel).down;
+}
+
+function isHardwarePedalDown(channel) {
   return getPedalState(channel).down;
 }
 
@@ -618,11 +623,54 @@ function flushMonitorPedal(channel) {
   });
 }
 
-function finishPedalNotes(channel, t) {
+function finishPedalNotes(channel, t, force) {
   var pedal = getPedalState(channel);
+  if (!force && (manualPedalDown || pedal.down)) return;
   pedal.held.forEach(function (note) { note.soundOff = t; });
   pedal.held = [];
   flushMonitorPedal(channel);
+}
+
+function updatePedalUi() {
+  var button = $('btnManualPedal');
+  var label = $('manualPedalLabel');
+  var status = $('pedalStatus');
+  var hardware = Object.keys(pedalState).some(function (channel) {
+    return isHardwarePedalDown(parseInt(channel, 10));
+  });
+  if (button) {
+    button.classList.toggle('active', manualPedalDown);
+    button.setAttribute('aria-pressed', manualPedalDown ? 'true' : 'false');
+  }
+  if (label) label.textContent = manualPedalDown ? '模拟踏板：踩下' : '模拟踏板：松开';
+  if (status) {
+    if (hardware && manualPedalDown) status.textContent = '硬件 + 模拟踏板保持中';
+    else if (hardware) status.textContent = '硬件踏板已踩下';
+    else if (manualPedalDown) status.textContent = '模拟踏板保持中';
+    else status.textContent = '未踩下';
+  }
+}
+
+function setManualPedal(down, eventTime) {
+  down = !!down;
+  if (manualPedalDown === down) {
+    updatePedalUi();
+    return;
+  }
+  var t = eventTime === undefined ? nowMs() : eventTime;
+  manualPedalDown = down;
+  if (state.recording) {
+    state.ccs.push({ cc: 64, value: down ? 127 : 0, channel: 0, t: t, source: 'manual' });
+    $('mCc').textContent = state.ccs.length;
+    $('ccbox').textContent = '模拟延音踏板：' + (down ? '踩下' : '松开') + '（CC64 ' + (down ? '127' : '0') + '）';
+  }
+  if (!down) {
+    Object.keys(pedalState).forEach(function (channel) {
+      var ch = parseInt(channel, 10);
+      if (!isHardwarePedalDown(ch)) finishPedalNotes(ch, t);
+    });
+  }
+  updatePedalUi();
 }
 
 function handleSustain(channel, value, t) {
@@ -632,6 +680,7 @@ function handleSustain(channel, value, t) {
   pedal.down = value > 0;
   pedal.full = value >= 64;
   if (wasEngaged && value === 0) finishPedalNotes(channel, t);
+  updatePedalUi();
 }
 
 function applyPedalTimeline(notes, ccs) {
@@ -740,8 +789,11 @@ function handleMessage(msg, t) {
     state.ccs.push({ cc: msg[1], value: msg[2], channel: channel, t: t });
     if (msg[1] === 64) handleSustain(channel, msg[2], t);
     $('mCc').textContent = state.ccs.length;
-    var label = msg[1] === 64 ? '延音踏板' : ('CC' + msg[1]);
-    $('ccbox').textContent = label + '：B0 ' + msg[1].toString(16).toUpperCase() + ' ' + msg[2].toString(16).toUpperCase() + '（值 ' + msg[2] + '）';
+    var label = msg[1] === 64 ? '硬件延音踏板' : ('CC' + msg[1]);
+    var stateText = msg[1] === 64
+      ? (msg[2] === 0 ? '松开' : (msg[2] >= 64 ? '踩下' : '半踏'))
+      : ('值 ' + msg[2]);
+    $('ccbox').textContent = label + '：' + stateText + ' · B0 ' + msg[1].toString(16).toUpperCase() + ' ' + msg[2].toString(16).toUpperCase();
   }
 }
 
@@ -760,6 +812,8 @@ function disconnectBle() {
   bleChar = null;
   monitorNodes = {};
   pedalState = {};
+  manualPedalDown = false;
+  updatePedalUi();
 }
 
 async function connect() {
@@ -1069,6 +1123,8 @@ function startRecNow() {
   state.pending = {};
   state.ccs = [];
   pedalState = {};
+  manualPedalDown = false;
+  updatePedalUi();
   practiceUpdate();
   state.lastDur = 0;
   noteEdit.selected = -1;
@@ -1106,7 +1162,13 @@ function stopRec() {
       state.notes.push(p);
     });
   });
-  Object.keys(pedalState).forEach(function (channel) { finishPedalNotes(parseInt(channel, 10), t); });
+  if (manualPedalDown) {
+    state.ccs.push({ cc: 64, value: 0, channel: 0, t: t, source: 'manual' });
+    $('mCc').textContent = state.ccs.length;
+  }
+  Object.keys(pedalState).forEach(function (channel) { finishPedalNotes(parseInt(channel, 10), t, true); });
+  manualPedalDown = false;
+  updatePedalUi();
   state.pending = {};
   state.notes.sort(function (a, b) { return a.tOn - b.tOn || a.pitch - b.pitch; });
   state.lastDur = t / 1000;
@@ -2469,22 +2531,33 @@ function renderJianpu() {
   var ki = score.key;
   var trebleVoices = score.trebleVoices || [score.treble];
   var bassVoices = score.bassVoices || [score.bass];
+  var sigParts = (score.sig || '4/4').split('/');
+  var barLen = (parseInt(sigParts[0], 10) || 4) * 4 / (parseInt(sigParts[1], 10) || 4);
+  var spb = 60 / score.bpm;
   var wrap = document.createElement('div');
   wrap.className = 'jp-wrap';
+
+  var guide = document.createElement('div');
+  guide.className = 'jp-guide';
+  guide.innerHTML = '<b>读谱提示</b><span>0 是休止符</span><span>数字上方 / 下方的点表示高音 / 低音</span><span>数字下方横线表示八分音符或十六分音符</span><span>竖排数字表示和弦</span>';
+  host.appendChild(guide);
 
   function degreeOf(pitch) {
     return jianpuDegreeOf(pitch, ki);
   }
 
-  // 把一条声部渲染进一行，返回这一行是否有实际音符
-  function emit(items, row) {
+  // 把一条声部渲染进轨道，音符宽度按拍值分配，保证同一小节内上下对齐。
+  function emit(items, track) {
     var hasNote = false;
     for (var i = 0; i < items.length; i++) {
       var it = items[i];
       var el = document.createElement('div');
       el.className = 'jp-item';
+      el.style.flex = '0 0 ' + ((it.b / barLen) * 100).toFixed(4) + '%';
 
       if (it.rest) {
+        el.classList.add('jp-rest-item');
+        el.title = '休止 ' + it.b + ' 拍';
         el.innerHTML = '<span class="jp-dots-top">&nbsp;</span><span class="jp-rest">0</span><span class="jp-dots-bot">&nbsp;</span>';
         if (it.b >= 2) el.innerHTML += '<span class="jp-hold">' + new Array(Math.round(it.b)).join('– ') + '</span>';
       } else {
@@ -2492,6 +2565,8 @@ function renderJianpu() {
         var inner = document.createElement('div');
         inner.className = 'jp-chord jp-inner';
         if (it.tie) el.classList.add('jp-tie');
+        if (it.pitches.length > 1) inner.classList.add('jp-chord-multi');
+        el.title = (it.pitches.length > 1 ? '和弦 · ' : '音符 · ') + it.b + ' 拍';
 
         it.pitches.forEach(function (p) {
           var info = degreeOf(p);
@@ -2536,62 +2611,90 @@ function renderJianpu() {
           el.appendChild(dotEl);
         }
       }
-      row.appendChild(el);
+      track.appendChild(el);
     }
     return hasNote;
+  }
+
+  function makeRow(label, cls) {
+    var row = document.createElement('div');
+    row.className = 'jp-row' + (cls ? ' ' + cls : '');
+    var tag = document.createElement('span');
+    tag.className = 'jp-row-label';
+    tag.textContent = label;
+    var track = document.createElement('div');
+    track.className = 'jp-track';
+    row.appendChild(tag);
+    row.appendChild(track);
+    return { row: row, track: track };
   }
 
   for (var m = 0; m < score.n; m++) {
     var meas = document.createElement('div');
     meas.className = 'jp-measure';
 
+    var head = document.createElement('div');
+    head.className = 'jp-measure-head';
+    var headNo = document.createElement('b');
+    headNo.textContent = '小节 ' + (m + 1);
+    head.appendChild(headNo);
+    if (m === 0) {
+      var headSig = document.createElement('span');
+      headSig.textContent = (score.sig || '4/4') + ' · ♩=' + score.bpm;
+      head.appendChild(headSig);
+    }
+    meas.appendChild(head);
+
     trebleVoices.forEach(function (voice, voiceIndex) {
-      var tRow = document.createElement('div');
-      tRow.className = 'jp-row' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : '');
-      emit(voice[m] || [], tRow);
-      meas.appendChild(tRow);
+      var row = makeRow(voiceIndex ? '右手 ' + (voiceIndex + 1) : '右手', voiceIndex ? 'voice-' + (voiceIndex + 1) : '');
+      var tHas = emit(voice[m] || [], row.track);
+      if (voiceIndex === 0 || tHas) meas.appendChild(row.row);
     });
 
     bassVoices.forEach(function (voice, voiceIndex) {
-      var bRow = document.createElement('div');
-      bRow.className = 'jp-row bass' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : '');
-      var bHas = emit(voice[m] || [], bRow);
-      if (bHas) meas.appendChild(bRow);
+      var row = makeRow(voiceIndex ? '左手 ' + (voiceIndex + 1) : '左手', 'bass' + (voiceIndex ? ' voice-' + (voiceIndex + 1) : ''));
+      var bHas = emit(voice[m] || [], row.track);
+      if (bHas) meas.appendChild(row.row);
     });
 
-    var sigParts = (score.sig || '4/4').split('/');
-    var barLen = (parseInt(sigParts[0], 10) || 4) * 4 / (parseInt(sigParts[1], 10) || 4);
-    var spb = 60 / score.bpm;
     var pedalStart = m * barLen;
     var pedalEnd = pedalStart + barLen;
     (score.pedalIntervals || []).forEach(function (interval) {
       var start = Math.max(pedalStart, interval.start / 1000 / spb);
       var end = Math.min(pedalEnd, interval.end / 1000 / spb);
       if (end <= start + 0.001) return;
-      var pedalRow = meas.querySelector('.jp-pedal');
+      var pedalRow = meas.querySelector('.jp-pedal-row');
       if (!pedalRow) {
         pedalRow = document.createElement('div');
-        pedalRow.className = 'jp-pedal';
+        pedalRow.className = 'jp-pedal-row';
+        var pedalLabel = document.createElement('span');
+        pedalLabel.className = 'jp-row-label';
+        pedalLabel.textContent = '踏板';
+        var pedalTrack = document.createElement('div');
+        pedalTrack.className = 'jp-pedal';
+        pedalRow.appendChild(pedalLabel);
+        pedalRow.appendChild(pedalTrack);
         meas.appendChild(pedalRow);
       }
+      var pedalTrackHost = pedalRow.querySelector('.jp-pedal');
       var segment = document.createElement('span');
       segment.className = 'jp-pedal-segment' + (interval.partial ? ' partial' : '');
       segment.style.left = ((start - pedalStart) / barLen * 100) + '%';
       segment.style.width = ((end - start) / barLen * 100) + '%';
-      pedalRow.appendChild(segment);
+      pedalTrackHost.appendChild(segment);
       if (interval.start / 1000 / spb >= pedalStart - 0.001) {
         var label = document.createElement('b');
         label.className = 'jp-pedal-label';
         label.style.left = ((start - pedalStart) / barLen * 100) + '%';
         label.textContent = 'Ped.';
-        pedalRow.appendChild(label);
+        pedalTrackHost.appendChild(label);
       }
       if (interval.end / 1000 / spb <= pedalEnd + 0.001) {
         var release = document.createElement('b');
         release.className = 'jp-pedal-release';
         release.style.left = ((end - pedalStart) / barLen * 100) + '%';
         release.textContent = '✱';
-        pedalRow.appendChild(release);
+        pedalTrackHost.appendChild(release);
       }
     });
     wrap.appendChild(meas);
@@ -2600,7 +2703,7 @@ function renderJianpu() {
   host.appendChild(wrap);
   var note = document.createElement('p');
   note.className = 'notation-note';
-  note.textContent = '调性：' + keyDisplayName(ki) + '　速度：' + score.bpm + ' BPM　网格：1/' + (state.gridDiv * 4);
+  note.textContent = '调性：' + keyDisplayName(ki) + '　速度：' + score.bpm + ' BPM　网格：1/' + (state.gridDiv * 4) + '　左手伴奏以浅色显示，踏板线位于每小节下方';
   host.appendChild(note);
 }
 
@@ -5215,8 +5318,25 @@ function runSelfTest() {
       ok('抬起踏板时完成声音结束时间', state.notes.length === 1 && state.notes[0].soundOff === 320,
          JSON.stringify(state.notes[0] || null));
 
+      state.notes = [];
+      state.pending = {};
+      pedalState = {};
+      state.ccs = [];
+      manualPedalDown = false;
+      handleMessage([0x90, 65, 100], 0);
+      setManualPedal(true, 20);
+      handleMessage([0x80, 65, 0], 100);
+      ok('模拟踏板按下时保留音符', state.notes.length === 1 && state.notes[0].soundOff === null,
+         JSON.stringify(state.notes[0] || null));
+      setManualPedal(false, 320);
+      ok('模拟踏板释放时完成音符', state.notes.length === 1 && state.notes[0].soundOff === 320,
+         JSON.stringify(state.notes[0] || null));
+      ok('模拟踏板写入 CC64', state.ccs.length === 2 && state.ccs[0].source === 'manual' && state.ccs[1].value === 0,
+         JSON.stringify(state.ccs));
+
       state.recording = keepRec; state.t0 = keepT0;
-      state.notes = keepNotes; state.pending = keepPend; state.ccs = keepCcs; pedalState = keepPedal;
+      state.notes = keepNotes; state.pending = keepPend; state.ccs = keepCcs; pedalState = keepPedal; manualPedalDown = false;
+      updatePedalUi();
     })();
     /* ---- 本轮修复的回归用例 ---- */
 
@@ -6224,6 +6344,10 @@ $('btnPrintScore').addEventListener('click', printScore);
 $('scoreTitle').addEventListener('input', updatePrintHeading);
 $('scoreAuthor').addEventListener('input', updatePrintHeading);
 $('btnSamples').addEventListener('click', loadSamples);
+$('btnManualPedal').addEventListener('click', function () {
+  setManualPedal(!manualPedalDown);
+});
+updatePedalUi();
 
 // 采样改为自动加载：此前只有手动点「加载真实钢琴采样」才会用真实音色，
 // 不点就一直走 6 个正弦波的合成音（听起来像电子琴，和钢琴差很远）。

@@ -151,7 +151,7 @@
     </div>
 
     <div class="card score-card jianpu-card" data-workspace="performance score">
-      <div class="card-head">简谱<span class="sub" id="jianpuMeta">数字谱，含高低音点与减时线</span></div>
+      <div class="card-head">简谱<span class="sub" id="jianpuMeta">0 表示休止 · 点表示高低音 · 横线表示时值</span></div>
       <div id="jianpuHost"><p class="empty">录一段，这里会生成简谱</p></div>
     </div>
 
@@ -347,7 +347,15 @@
         <label>音量 <b id="volVal">80%</b></label>
         <input type="range" id="vol" min="0" max="100" value="80">
       </div>
-      <label class="checkbox"><input type="checkbox" id="sustain" checked> 模拟踏板（延长释放）</label>
+      <div class="pedal-control">
+        <button class="pedal-toggle" id="btnManualPedal" type="button" aria-pressed="false">
+          <span class="pedal-icon" aria-hidden="true">⌁</span>
+          <span id="manualPedalLabel">模拟踏板：松开</span>
+        </button>
+        <span class="pedal-status" id="pedalStatus">未踩下</span>
+      </div>
+      <p class="hint pedal-hint">点击按钮保持延音，再点一次释放。连接的钢琴如果发送标准 CC64，软件会优先记录硬件踏板。</p>
+      <label class="checkbox"><input type="checkbox" id="sustain" checked> 播放时保留自然尾音</label>
       <label class="checkbox"><input type="checkbox" id="monitor"> 边弹边听</label>
     </div>
 
@@ -407,7 +415,7 @@
     <div class="card pedal-card" data-workspace="project">
       <h3>踏板监视器</h3>
       <div class="ccbox mono" id="ccbox">等待数据…</div>
-      <p class="hint">踩一下踏板，看这里有没有出现 <span class="mono">B0 40 xx</span>。如果没有，说明这台琴的踏板<b>不走蓝牙</b>，软件里的延音只能靠「模拟踏板」补。</p>
+      <p class="hint">踩一下踏板，看这里有没有出现 <span class="mono">B0 40 xx</span>。没有事件时，使用上方「模拟踏板」按钮也能在录音中写入延音踏板轨迹。</p>
     </div>
 
     <div class="card diagnostic-card" data-workspace="project">
@@ -446,7 +454,7 @@
       <tr><td><kbd>Shift</kbd> + 拖动</td><td>在片段上强制框选时间段</td></tr>
     </table>
 
-    <p class="note"><b>关于踏板：</b>不少入门琴只把踏板信号送给内部音源，不往蓝牙广播。右侧的「踏板监视器」会实时显示收到的 <span class="mono">CC</span> 事件；如果踩下去一直是 0，那就是硬件不发，只能靠「模拟踏板」补延音。</p>
+    <p class="note"><b>关于踏板：</b>标准延音踏板会发送 <span class="mono">CC64</span>。有些电钢琴只把踏板交给内部音源，不通过蓝牙或 USB 发送，这时可以用音色面板里的「模拟踏板」按钮手动保持和释放，录音会把这两个动作写入谱面与 MIDI。</p>
 
     <div class="modal-foot">
       <span class="grow"></span>
