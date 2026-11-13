@@ -593,6 +593,12 @@ function noteSoundEnd(note) {
     : note.tOff;
 }
 
+function noteFingerEnd(note) {
+  return note && note.tFingerOff !== null && note.tFingerOff !== undefined
+    ? note.tFingerOff
+    : note.tOff;
+}
+
 function releaseMonitorGain(entry, seconds) {
   if (!entry || !entry.gain || !actx) return;
   try {
@@ -1855,11 +1861,9 @@ function decompose(len, table) {
   return out;
 }
 
-function snapDown(len) {
-  for (var i = 0; i < NOTE_DURS.length; i++) {
-    if (NOTE_DURS[i].b <= len + 0.001) return NOTE_DURS[i];
-  }
-  return NOTE_DURS[NOTE_DURS.length - 1];
+function decomposeNoteDuration(len) {
+  var rounded = Math.max(0.25, Math.round(len * 4) / 4);
+  return decompose(rounded, NOTE_DURS);
 }
 
 function syncBpmLabel() {
@@ -1893,7 +1897,7 @@ function detectKey(list) {
   var src = list || state.notes;
   var hist = new Array(12).fill(0);
   src.forEach(function (n) {
-    hist[n.pitch % 12] += Math.max(0.2, (n.tOff - n.tOn) / 1000);
+    hist[n.pitch % 12] += Math.max(0.2, (noteFingerEnd(n) - n.tOn) / 1000);
   });
   var bestTonic = 0, bestMode = 'major', bestScore = -1;
   for (var t = 0; t < 12; t++) {
@@ -2011,7 +2015,7 @@ function buildScore() {
     src.forEach(function (n) {
       if (!staffTest(n.pitch)) return;
       var s = Math.round((n.tOn / 1000 / spb) / gb) * gb;
-      var e = Math.round((n.tOff / 1000 / spb) / gb) * gb;
+      var e = Math.round((noteFingerEnd(n) / 1000 / spb) / gb) * gb;
       if (e <= s) e = s + gb;
       var k = s.toFixed(3);
       if (!map[k]) map[k] = { s: s, e: e, pitches: [] };
@@ -2037,16 +2041,30 @@ function buildScore() {
       var items = [];
       var cursor = m * barLen;
 
+      function appendNoteSpan(pitches, duration, tieId) {
+        var parts = decomposeNoteDuration(duration);
+        var chainId = tieId;
+        if (parts.length > 1 && chainId === null) chainId = ++tieCounter;
+        parts.forEach(function (part) {
+          var item = { rest: false, b: part.b, d: part.d, dot: part.dot || 0, pitches: pitches.slice() };
+          if (chainId !== null) {
+            item.tie = true;
+            item.tieId = chainId;
+          }
+          items.push(item);
+        });
+        return chainId;
+      }
+
       // 先处理上一小节延续过来的延音（跨小节 tie 的续段）
       var newCarry = [];
       carry.forEach(function (cc) {
         var remain = (m + 1) * barLen - cursor;
         var d = Math.min(cc.dur, remain);
-        var sd = snapDown(d);
-        items.push({ rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, tie: true, tieId: cc.tieId, pitches: cc.pitches.slice() });
-        cursor += sd.b;
-        if (cc.dur > remain + 0.001) {
-          newCarry.push({ pitches: cc.pitches, dur: cc.dur - sd.b, tieId: cc.tieId });
+        var chainId = appendNoteSpan(cc.pitches, d, cc.tieId);
+        cursor += d;
+        if (cc.dur > d + 0.001) {
+          newCarry.push({ pitches: cc.pitches, dur: cc.dur - d, tieId: chainId });
         }
       });
       carry = newCarry;
@@ -2063,15 +2081,13 @@ function buildScore() {
         }
         var remain = (m + 1) * barLen - cursor;
         var d = Math.min(c.dur, remain);
-        var sd = snapDown(d);
-        var item = { rest: false, b: sd.b, d: sd.d, dot: sd.dot || 0, pitches: c.pitches.slice().sort(function (a, b) { return a - b; }) };
+        var pitches = c.pitches.slice().sort(function (a, b) { return a - b; });
+        var chainId = c.dur > d + 0.001 ? ++tieCounter : null;
+        chainId = appendNoteSpan(pitches, d, chainId);
         if (c.dur > remain + 0.001) {
-          item.tie = true;
-          item.tieId = ++tieCounter;
-          carry.push({ pitches: c.pitches, dur: c.dur - sd.b, tieId: item.tieId });
+          carry.push({ pitches: pitches, dur: c.dur - d, tieId: chainId });
         }
-        items.push(item);
-        cursor += sd.b;
+        cursor += d;
         ci++;
       }
       var left = (m + 1) * barLen - cursor;
@@ -4986,6 +5002,16 @@ function runSelfTest() {
     ok('第一小节拍数完整', Math.abs(sum0 - 4) < 0.01, 'sum=' + sum0);
     ok('第二小节拍数完整', Math.abs(sum1 - 4) < 0.01, 'sum=' + sum1);
     state.notes = kn; state.timeSig = ks; state.bpm = kb; state.gridDiv = kg;
+
+    var keepNotesDur = state.notes, keepSigDur = state.timeSig, keepBpmDur = state.bpm, keepGridDur = state.gridDiv;
+    state.notes = [{ pitch: 60, vel: 90, tOn: 0, tOff: 3500 }];
+    state.bpm = 60; state.timeSig = '4/4'; state.gridDiv = 2;
+    var scDur = buildScore();
+    var durItems = (scDur.treble[0] || []).filter(function (it) { return !it.rest; });
+    var durSum = durItems.reduce(function (a, it) { return a + it.b; }, 0);
+    ok('长时值拆分后不丢拍', durItems.length === 2 && Math.abs(durSum - 3.5) < 0.01 && durItems.every(function (it) { return it.tie; }),
+       'items=' + durItems.length + ' sum=' + durSum);
+    state.notes = keepNotesDur; state.timeSig = keepSigDur; state.bpm = keepBpmDur; state.gridDiv = keepGridDur;
 
     // 版本快照摘要
     ok('快照摘要-音符', snapMeta({ notes: [{}, {}, {}], clips: [] }) === '3 个音符',
