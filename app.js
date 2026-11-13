@@ -1887,8 +1887,27 @@ function syncBpmLabel() {
   if (el) el.textContent = state.bpm;
 }
 
+function collectOnsetClusters(notes, windowMs) {
+  var starts = (notes || []).map(function (n) { return n.tOn; }).sort(function (a, b) { return a - b; });
+  var clusters = [];
+  (windowMs = windowMs || 45);
+  starts.forEach(function (start) {
+    var current = clusters[clusters.length - 1];
+    if (!current || start - current.last > windowMs) {
+      clusters.push({ first: start, last: start, sum: start, count: 1 });
+    } else {
+      current.last = start;
+      current.sum += start;
+      current.count++;
+    }
+  });
+  return clusters.map(function (cluster) {
+    return cluster.sum / cluster.count;
+  });
+}
+
 function estimateTempo() {
-  var starts = state.notes.map(function (n) { return n.tOn; }).sort(function (a, b) { return a - b; });
+  var starts = collectOnsetClusters(state.notes, 45);
   if (starts.length < 4) return;
   var gaps = [];
   for (var i = 1; i < starts.length; i++) {
@@ -5152,6 +5171,11 @@ function runSelfTest() {
       ], 600);
       ok('谱面踏板区间按 CC64 生成', pedalDemo.length === 1 && pedalDemo[0].start === 100 && pedalDemo[0].end === 420,
          JSON.stringify(pedalDemo));
+      var onsetDemo = collectOnsetClusters([
+        { tOn: 0 }, { tOn: 12 }, { tOn: 24 }, { tOn: 500 }, { tOn: 512 }, { tOn: 1000 }
+      ], 45);
+      ok('和弦起音聚类后再估算 BPM', onsetDemo.length === 3 && Math.abs(onsetDemo[1] - 506) < 0.01,
+         JSON.stringify(onsetDemo));
 
     // 用 A 自然小调音集验证 detectKey 返回小调
     var minorScale = [9, 11, 0, 2, 4, 5, 7].map(function (pc) {
