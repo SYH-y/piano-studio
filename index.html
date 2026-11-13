@@ -317,7 +317,7 @@
     </div>
 
     <div class="card score-export-card" data-workspace="score">
-      <h3>谱面导出<span class="sub">PNG · 打印 · PDF</span></h3>
+      <h3>谱面导出<span class="sub">PNG · MusicXML · 打印 · PDF</span></h3>
       <div class="field">
         <label>曲名</label>
         <input type="text" id="scoreTitle" value="PIANO STUDIO 乐谱" maxlength="80">
@@ -329,9 +329,10 @@
       <div class="export-row">
         <button class="btn" id="btnStaffPng" disabled>五线谱 PNG</button>
         <button class="btn" id="btnJianpuPng" disabled>简谱 PNG</button>
+        <button class="btn" id="btnMusicXml" disabled>MusicXML</button>
         <button class="btn full" id="btnPrintScore" disabled>打印 / 保存 PDF</button>
       </div>
-      <p class="hint">先录音或载入 MIDI，再导出当前谱面。打印窗口中选择“保存为 PDF”即可生成文件。</p>
+      <p class="hint">先录音或载入 MIDI，再导出当前谱面。MusicXML 可以继续在 MuseScore、Dorico 等制谱软件中编辑。</p>
     </div>
 
     <div class="card tone-card" data-workspace="performance project">

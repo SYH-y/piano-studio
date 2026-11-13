@@ -2710,7 +2710,7 @@ function updatePrintHeading() {
 
 function updateScoreExportButtons() {
   var ready = !!state.notes.length && !!score;
-  ['btnStaffPng', 'btnJianpuPng', 'btnPrintScore'].forEach(function (id) {
+  ['btnStaffPng', 'btnJianpuPng', 'btnMusicXml', 'btnPrintScore'].forEach(function (id) {
     if ($(id)) $(id).disabled = !ready;
   });
   updatePrintHeading();
@@ -2724,6 +2724,114 @@ function printScore() {
   updatePrintHeading();
   document.body.classList.add('printing-score');
   setTimeout(function () { window.print(); }, 50);
+}
+
+function musicXmlPitch(pitch, ki) {
+  var key = vexKey(pitch, ki);
+  var parts = key.split('/');
+  var step = parts[0].charAt(0).toUpperCase();
+  var accidental = parts[0].slice(1);
+  var alter = accidental === '#' ? 1 : (accidental === 'b' ? -1 : 0);
+  return '<pitch><step>' + step + '</step>' + (alter ? '<alter>' + alter + '</alter>' : '') +
+    '<octave>' + parts[1] + '</octave></pitch>';
+}
+
+function musicXmlType(duration) {
+  return { w: 'whole', h: 'half', q: 'quarter', '8': 'eighth', '16': '16th' }[duration] || 'quarter';
+}
+
+function musicXmlVoiceItems(items, voiceNo, staffNo, ki) {
+  var out = '';
+  var tieGroups = {};
+  items.forEach(function (item) {
+    if (item.tie) tieGroups[item.tieId] = (tieGroups[item.tieId] || 0) + 1;
+  });
+  var seenTies = {};
+  items.forEach(function (item) {
+    var duration = Math.max(1, Math.round(item.b * 480));
+    var type = musicXmlType(item.d);
+    if (item.rest) {
+      out += '<note><rest/><duration>' + duration + '</duration><voice>' + voiceNo + '</voice><type>' + type + '</type><staff>' + staffNo + '</staff></note>';
+      return;
+    }
+    var tieStart = false, tieStop = false, tieKey = null;
+    if (item.tie) {
+      tieKey = String(item.tieId);
+      var tiePosition = seenTies[tieKey] || 0;
+      var tieTotal = tieGroups[tieKey] || 1;
+      tieStart = tiePosition === 0;
+      tieStop = tiePosition === tieTotal - 1;
+    }
+    item.pitches.forEach(function (pitch, index) {
+      var tieXml = '';
+      var notationXml = '';
+      if (item.tie) {
+        if (tieStart) {
+          tieXml += '<tie type="start"/>';
+          notationXml += '<tied type="start"/>';
+        }
+        if (tieStop) {
+          tieXml += '<tie type="stop"/>';
+          notationXml += '<tied type="stop"/>';
+        }
+      }
+      out += '<note>' + (index ? '<chord/>' : '') + musicXmlPitch(pitch, ki) +
+        '<duration>' + duration + '</duration><voice>' + voiceNo + '</voice><type>' + type + '</type>' +
+        (item.dot ? '<dot/>' : '') + '<staff>' + staffNo + '</staff>' + tieXml +
+        (notationXml ? '<notations>' + notationXml + '</notations>' : '') + '</note>';
+    });
+    if (tieKey) seenTies[tieKey] = (seenTies[tieKey] || 0) + 1;
+  });
+  return out;
+}
+
+function exportMusicXml() {
+  if (!state.notes.length || !score) {
+    alert('还没有可导出的谱面。先录一段或载入 MIDI。');
+    return;
+  }
+  var title = $('scoreTitle').value.trim() || 'PIANO STUDIO 乐谱';
+  var author = $('scoreAuthor').value.trim();
+  var sig = (score.sig || '4/4').split('/');
+  var beats = parseInt(sig[0], 10) || 4;
+  var beatType = parseInt(sig[1], 10) || 4;
+  var barDuration = beats * 4 / beatType * 480;
+  var trebleVoices = score.trebleVoices || [score.treble];
+  var bassVoices = score.bassVoices || [score.bass];
+  var parts = [];
+  trebleVoices.forEach(function (voice, index) { parts.push({ voice: voice, no: index + 1, staff: 1 }); });
+  bassVoices.forEach(function (voice, index) { parts.push({ voice: voice, no: index + 1 + trebleVoices.length, staff: 2 }); });
+
+  var xml = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>' +
+    '<score-partwise version="3.1"><work><work-title>' + scoreXmlEscape(title) + '</work-title></work>' +
+    (author ? '<identification><creator type="composer">' + scoreXmlEscape(author) + '</creator></identification>' : '') +
+    '<part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list><part id="P1">';
+
+  for (var m = 0; m < score.n; m++) {
+    xml += '<measure number="' + (m + 1) + '">';
+    if (m === 0) {
+      xml += '<attributes><divisions>480</divisions><key><fifths>' + (score.key.sig || 0) + '</fifths><mode>' + (score.key.mode || 'major') + '</mode></key>' +
+        '<time><beats>' + beats + '</beats><beat-type>' + beatType + '</beat-type></time>' +
+        '<staves>2</staves><clef><sign>G</sign><line>2</line></clef><clef><sign>F</sign><line>4</line></clef></attributes>';
+    }
+    var pedalStart = m * (beats * 4 / beatType) * (60 / score.bpm) * 1000;
+    var pedalEnd = (m + 1) * (beats * 4 / beatType) * (60 / score.bpm) * 1000;
+    (score.pedalIntervals || []).forEach(function (interval) {
+      if (interval.start >= pedalStart && interval.start < pedalEnd) {
+        xml += '<direction placement="below"><direction-type><pedal type="start" line="yes"/></direction-type></direction>';
+      }
+      if (interval.end > pedalStart && interval.end <= pedalEnd) {
+        xml += '<direction placement="below"><direction-type><pedal type="stop" line="yes"/></direction-type></direction>';
+      }
+    });
+    parts.forEach(function (part, index) {
+      xml += musicXmlVoiceItems(part.voice[m] || [], part.no, part.staff, score.key);
+      if (index < parts.length - 1) xml += '<backup><duration>' + barDuration + '</duration></backup>';
+    });
+    xml += '</measure>';
+  }
+  xml += '</part></score-partwise>';
+  download(new Blob([xml], { type: 'application/vnd.recordare.musicxml+xml' }), scoreExportName(title) + '.musicxml');
 }
 
 window.addEventListener('afterprint', function () {
@@ -5189,6 +5297,8 @@ function runSelfTest() {
       ], 45);
       ok('和弦起音聚类后再估算 BPM', onsetDemo.length === 3 && Math.abs(onsetDemo[1] - 506) < 0.01,
          JSON.stringify(onsetDemo));
+      ok('MusicXML 时值映射', musicXmlType('8') === 'eighth' && musicXmlType('h') === 'half',
+         musicXmlType('8') + '/' + musicXmlType('h'));
 
     // 用 A 自然小调音集验证 detectKey 返回小调
     var minorScale = [9, 11, 0, 2, 4, 5, 7].map(function (pc) {
@@ -6109,6 +6219,7 @@ $('btnWav').addEventListener('click', exportWav);
 $('btnMp3').addEventListener('click', exportMp3);
 $('btnStaffPng').addEventListener('click', function () { exportScoreHostPng('staffHost', '五线谱'); });
 $('btnJianpuPng').addEventListener('click', function () { exportScoreHostPng('jianpuHost', '简谱'); });
+$('btnMusicXml').addEventListener('click', exportMusicXml);
 $('btnPrintScore').addEventListener('click', printScore);
 $('scoreTitle').addEventListener('input', updatePrintHeading);
 $('scoreAuthor').addEventListener('input', updatePrintHeading);

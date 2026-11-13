@@ -12,7 +12,7 @@
 // CACHE 版本号的作用变成「强制丢弃离线副本」：升级到不兼容的改动、
 // 或想手动清掉旧缓存时，改这个字符串即可（activate 里会删掉其它版本）。
 
-const CACHE = 'piano-studio-v1.13.6';
+const CACHE = 'piano-studio-v1.13.7';
 const SHELL = [
   './',
   './index.html',
